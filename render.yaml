@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: commitdiary-stepper
+    env: docker
+    plan: free # Can be changed as you scale
+    region: frankfurt # Choose your preferred region
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: REDIS_URL
+        sync: false # Set this in the Render Dashboard (use Upstash URL)
+      - key: API_KEY_ENABLED
+        value: "true"
+      - key: STEPPER_API_KEY
+        generateValue: true # Render will generate a random key for you
+      - key: CORS_ENABLED
+        value: "true"
+      - key: RATE_LIMIT_ENABLED
+        value: "true"
+    healthCheckPath: /health
+    dockerfilePath: ./packages/stepper/Dockerfile
+    dockerContext: .

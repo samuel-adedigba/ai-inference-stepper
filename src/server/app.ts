@@ -1,6 +1,6 @@
 // packages/stepper/src/server/app.ts
 
-import express, { Request, Response, NextFunction } from 'express';
+import express, { Request, Response, NextFunction, Application } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -12,7 +12,7 @@ import { startWorker, stopWorker } from '../queue/worker.js';
 import { closeRedis } from '../cache/redisCache.js';
 import { closeQueue } from '../queue/producer.js';
 
-const app = express();
+const app: Application = express();
 
 // Trust proxy for proper IP detection behind reverse proxies (nginx, ELB, etc.)
 // Set to 1 for single proxy, true for any proxy, or specific IPs for security

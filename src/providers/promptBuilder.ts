@@ -42,7 +42,8 @@ You MUST analyze the above commit information and produce a JSON object with EXA
    - Base your summary ONLY on the actual code changes shown in the diff
    - Do NOT make assumptions about code you cannot see
 
-3. **changes** (array of strings, max 50 items):
+3. **changes** (array of strings, REQUIRED, minimum 1 item, max 50 items):
+   - CRITICAL: This array MUST contain at least one change item
    - List specific, concrete changes made in this commit
    - Each item should be one clear, atomic change
    - Format: "Added X to Y", "Modified Z in W", "Removed A from B"
@@ -52,6 +53,7 @@ You MUST analyze the above commit information and produce a JSON object with EXA
      * "Modified user login flow to include token refresh"
      * "Removed deprecated session handling code"
    - Be specific with file names and function names when relevant
+   - If you see file changes but cannot determine specifics, use: "Modified [filename]"
 
 4. **rationale** (string, max 2000 characters):
    - Explain WHY these changes were made
@@ -161,12 +163,13 @@ ${input.diffSummary.slice(0, 1500)}
 Return valid JSON with these exact fields:
 - title: Brief description (under 120 chars)
 - summary: What changed and why (2-3 sentences)
-- changes: Array of specific changes made
+- changes: Array of specific changes made (REQUIRED: minimum 1 item)
 - rationale: Why these changes were needed
 - impact_and_tests: Impact analysis and testing needs
 - next_steps: Array of follow-up tasks
 - tags: Comma-separated relevant tags
 
+CRITICAL: The "changes" array MUST have at least 1 item.
 Output ONLY valid JSON, no markdown or extra text.`;
 
     if (config.security.redactBeforeSend) {
@@ -190,4 +193,138 @@ export function buildCustomPrompt(
     }
 
     return basePrompt;
+}
+
+/**
+ * Build Gemini-specific prompt with XML structure (optimized for Gemini 3 models)
+ * 
+ * Google Gemini 3 performs significantly better with XML-structured prompts compared to
+ * traditional markdown or unstructured text. This function implements Google's recommended
+ * prompt engineering strategies for Gemini.
+ * 
+ * Key Differences from Other Providers:
+ * - Uses XML tags (<role>, <instructions>, <constraints>, <context>, <task>, <output_format>)
+ * - Follows Google's prompting hierarchy: role definition → instructions → constraints → context → task
+ * - Optimized for Gemini's multi-turn conversational model architecture
+ * - Structured for better token efficiency with Gemini's 4096 output limit
+ * 
+ * Reference: https://ai.google.dev/gemini-api/docs/prompting-strategies
+ * 
+ * @param input - The commit data to analyze (repo, commitSha, message, files, diffSummary, components)
+ * @returns XML-structured prompt string optimized for Gemini 3 models
+ */
+export function buildGeminiPrompt(input: PromptInput): string {
+    let prompt = `<role>
+You are a senior software engineer with expertise in code analysis, architectural patterns, and software development best practices. You analyze commits with precision and provide actionable insights.
+</role>
+
+<instructions>
+1. **Plan**: Examine the commit structure, files changed, and diff content
+2. **Execute**: Generate a comprehensive analysis following the exact output format
+3. **Validate**: Ensure all required fields are present and within character limits
+4. **Format**: Return ONLY valid JSON - no markdown, no code blocks, no extra text
+</instructions>
+
+<constraints>
+- Base your analysis ENTIRELY on the provided diff and commit data
+- Do NOT make assumptions about code you cannot see
+- Stay within specified character limits for each field
+- Use professional, technical language appropriate for engineering teams
+- Focus on facts derived from the actual code changes
+- Avoid speculation about functionality not visible in the diff
+</constraints>
+
+<context>
+Repository: ${input.repo}
+Commit SHA: ${input.commitSha}
+Commit Message: ${input.message}
+
+Files Changed (${input.files.length} total):
+${input.files.slice(0, 30).map((f, i) => `${i + 1}. ${f}`).join("\\n")}
+${input.files.length > 30 ? `... and ${input.files.length - 30} more files` : ""}
+
+Affected Components: ${input.components.join(", ") || "General"}
+
+## CODE DIFF
+${input.diffSummary.slice(0, 3000)}
+${input.diffSummary.length > 3000 ? "\\n[Diff content truncated for context length...]" : ""}
+</context>
+
+<task>
+Analyze the commit above and generate a structured JSON report with these EXACT fields:
+
+1. **title** (string, max 120 characters):
+   - Clear, specific summary: "[Component] Action taken"
+   - Example: "Auth: Add JWT token refresh mechanism"
+   - Use active voice, present tense
+
+2. **summary** (string, max 2000 characters):
+   - Paragraph 1: Problem solved or feature added
+   - Paragraph 2: Implementation approach and key technical decisions
+   - Paragraph 3 (optional): Trade-offs or architectural considerations
+   - Stay grounded in visible code changes
+
+3. **changes** (array of strings, REQUIRED, minimum 1 item, max 50 items):
+   - CRITICAL: This array MUST contain at least one change item
+   - List specific, atomic changes: "Added X to Y", "Modified Z in W"
+   - Focus on WHAT changed, not WHY
+   - Each change should be a complete sentence describing one modification
+   - Examples:
+     * "Added handleTokenRefresh() method to AuthService"
+     * "Modified login endpoint to return refresh token"
+     * "Removed deprecated session storage logic"
+   - If you see file changes but cannot determine specifics, use: "Modified [filename]"
+
+4. **rationale** (string, max 2000 characters):
+   - Explain WHY these changes were necessary
+   - Technical reasoning behind the approach
+   - Benefits of this implementation
+
+5. **impact_and_tests** (string, max 2000 characters):
+   - What systems/components are affected?
+   - What should be tested?
+   - Potential risks or side effects
+   - Performance implications if visible
+
+6. **next_steps** (array of strings, max 20 items):
+   - Actionable follow-up tasks
+   - Suggested improvements or refactorings
+   - Documentation needs
+   - Examples:
+     * "Add integration tests for token refresh flow"
+     * "Update API documentation with new endpoints"
+
+7. **tags** (string, max 200 characters):
+   - Comma-separated relevant tags
+   - Include: component names, change types, technologies
+   - Example: "auth, security, jwt, backend, api"
+</task>
+
+<output_format>
+Return ONLY a valid JSON object. No markdown code blocks. No backticks. No explanatory text before or after.
+
+CRITICAL: The "changes" array MUST have at least 1 item. Do not return an empty array.
+
+{
+  "title": "Component: Clear action description under 120 chars",
+  "summary": "Detailed explanation in 2-3 paragraphs...",
+  "changes": ["Specific change 1", "Specific change 2", "Specific change 3"],
+  "rationale": "Technical reasoning for these changes...",
+  "impact_and_tests": "Systems affected and testing recommendations...",
+  "next_steps": ["Action item 1", "Action item 2"],
+  "tags": "component1, component2, category, technology"
+}
+
+Ensure all required fields are present with appropriate content.
+</output_format>
+
+<final_instruction>
+Based on the commit information provided above, generate the analysis report in valid JSON format now.
+</final_instruction>`;
+
+    if (config.security.redactBeforeSend) {
+        prompt = redactSecrets(prompt);
+    }
+
+    return prompt;
 }

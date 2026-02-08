@@ -8,6 +8,7 @@ import { config } from '../config.js';
 import { logger, createChildLogger } from '../logging.js';
 import { recordJobProcessed, recordJobFailed } from '../metrics/metrics.js';
 import { sendDiscordAlert } from '../alerts/discord.js';
+import { notifyWebhookSuccess, notifyWebhookFailure } from '../webhooks/delivery.js';
 
 let worker: Worker<ReportJobData> | null = null;
 
@@ -40,10 +41,17 @@ async function processReportJob(job: Job<ReportJobData>): Promise<void> {
         recordJobProcessed();
         log.info({ usedProvider: result.usedProvider, fallback: result.fallback }, 'Job completed successfully');
 
-        // TODO: If callbackUrl provided, send webhook notification
-        // if (job.data.callbackUrl) {
-        //   await notifyWebhook(job.data.callbackUrl, { jobId, status: 'completed', result });
-        // }
+        // Note: input.callbacks are already executed in orchestrator immediately after generation
+        // The callbackUrl below is the legacy webhook for backwards compatibility
+        if (job.data.callbackUrl && config.webhook.enabled) {
+            log.info({ callbackUrl: job.data.callbackUrl }, 'Sending success webhook');
+            await notifyWebhookSuccess(
+                job.data.callbackUrl,
+                config.webhook.secret,
+                jobId,
+                result.result
+            );
+        }
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         log.error({ error: errorMessage }, 'Job failed');
@@ -52,6 +60,52 @@ async function processReportJob(job: Job<ReportJobData>): Promise<void> {
         await markFailed(cacheKey, errorMessage, []);
 
         recordJobFailed();
+
+        // Execute failure callbacks if configured
+        // Note: We handle this directly here since orchestrator threw before callbacks could execute
+        // The callbacks are fire-and-forget to not delay the job failure handling
+        if (input.callbacks && input.callbacks.length > 0) {
+            const failurePayload = {
+                success: false,
+                error: errorMessage,
+                metadata: {
+                    jobId,
+                    userId: input.userId,
+                    commitSha: input.commitSha,
+                    repo: input.repo,
+                    timestamp: new Date().toISOString(),
+                },
+            };
+
+            for (const callback of input.callbacks) {
+                fetch(callback.url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Stepper/1.0',
+                        'X-Stepper-Timestamp': Date.now().toString(),
+                        ...callback.headers,
+                    },
+                    body: JSON.stringify(failurePayload),
+                    signal: AbortSignal.timeout(10000),
+                }).catch((err: Error) => {
+                    log.warn({ url: callback.url, error: err.message }, 'Failed to send failure callback');
+                });
+            }
+        }
+
+        // Send failure webhook notification if configured (legacy)
+        if (job.data.callbackUrl && config.webhook.enabled) {
+            log.info({ callbackUrl: job.data.callbackUrl }, 'Sending failure webhook');
+            await notifyWebhookFailure(
+                job.data.callbackUrl,
+                config.webhook.secret,
+                jobId,
+                errorMessage
+            ).catch(err => {
+                log.warn({ error: err.message }, 'Failed to send failure webhook');
+            });
+        }
 
         throw error; // Let BullMQ handle retry logic
     }

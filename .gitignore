@@ -6,3 +6,11 @@ dist/
 .DS_Store
 coverage/
 *.tsbuildinfo
+
+# Private/local docs
+README.local.md
+README.private.md
+README.internal.md
+*.local.md
+*_private.md
+*_internal.md

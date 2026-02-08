@@ -1,5 +1,6 @@
 // packages/stepper/src/server/app.ts
 
+import 'dotenv/config';
 import express, { Request, Response, NextFunction, Application } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -467,6 +468,13 @@ const server = app.listen(port, () => {
     helmet: config.security.helmet.enabled,
     apiKey: config.security.apiKey.enabled,
   }, 'Security configuration');
+
+  // Log webhook system status
+  if (process.env.DISCORD_WEBHOOK_URL) {
+    logger.info('Stepper error webhook configured - alerts enabled');
+  } else {
+    logger.info('Stepper error webhook not configured (set DISCORD_WEBHOOK_URL to enable)');
+  }
 
   // Start worker
   startWorker();

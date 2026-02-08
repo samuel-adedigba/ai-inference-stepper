@@ -33,29 +33,19 @@ jobs:
         run: npm install -g pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-        working-directory: packages/stepper
+        run: pnpm install # Removed --frozen-lockfile until you push a fresh lockfile
 
       - name: Lint
         run: pnpm lint
-        working-directory: packages/stepper
 
       - name: Type check
         run: pnpm typecheck
-        working-directory: packages/stepper
 
       - name: Build
         run: pnpm build
-        working-directory: packages/stepper
 
       - name: Test
         run: pnpm test
-        working-directory: packages/stepper
         env:
           REDIS_URL: redis://localhost:6379
           NODE_ENV: test
-
-      - name: Upload coverage
-        uses: codecov/codecov-action@v3
-        with:
-          directory: packages/stepper

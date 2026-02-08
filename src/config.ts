@@ -125,6 +125,12 @@ export function loadConfig(): StepperConfig {
       // How many total background jobs we run across all providers
       concurrency: parseInt(process.env.QUEUE_CONCURRENCY || '5', 10),
     },
+    webhook: {
+      enabled: process.env.WEBHOOK_ENABLED !== 'false', // Enabled by default
+      secret: process.env.WEBHOOK_SECRET || '',
+      maxRetries: parseInt(process.env.WEBHOOK_MAX_RETRIES || '3', 10),
+      retryDelayMs: parseInt(process.env.WEBHOOK_RETRY_DELAY_MS || '5000', 10),
+    },
     retry: {
       // Max Attempts: Try a single provider 3 times before moving to the next one.
       maxAttemptsPerProvider: parseInt(process.env.RETRY_MAX_ATTEMPTS || '3', 10),

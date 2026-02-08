@@ -51,6 +51,11 @@ export async function enqueueReportJob(
             priority: options.priority,
             removeOnComplete: 100, // Keep last 100 completed jobs
             removeOnFail: 500, // Keep last 500 failed jobs
+            attempts: 5, // Retry up to 5 times if all providers fail
+            backoff: {
+                type: 'exponential',
+                delay: 10000, // Start with 10 seconds, doubles each retry
+            },
         });
 
         logger.info({ jobId, userId: input.userId, commitSha: input.commitSha }, 'Job enqueued');

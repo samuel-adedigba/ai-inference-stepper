@@ -5,10 +5,10 @@ import Bottleneck from 'bottleneck';
 import CircuitBreaker from 'opossum';
 import { ProviderAdapter, ProviderError, AuthError, RateLimitError } from '../providers/provider.interface.js';
 import { createProviderAdapter } from '../providers/factory.js';
-import { PromptInput, ReportOutput, ProviderResult, ProviderAttemptMeta, StepperCallbacks, ProviderConfig } from '../types.js';
+import { PromptInput, ReportOutput, ProviderResult, ProviderAttemptMeta, StepperCallbacks, ProviderConfig, WebhookCallback } from '../types.js';
 import { config } from '../config.js';
 import { logger, createChildLogger } from '../logging.js';
-import { generateTemplateFallback } from '../fallback/templateFallback.js';
+// import { generateTemplateFallback } from '../fallback/templateFallback.js'; // DISABLED: Fallback removed to force retries
 import { recordProviderAttempt, recordProviderSuccess, recordProviderFailure } from '../metrics/metrics.js';
 import { isRetryableError } from '../utils/safeRequest.js';
 import { alertProviderFailure, alertCircuitOpen } from '../alerts/discord.js';
@@ -101,6 +101,110 @@ function getBackoffDelay(attempt: number): number {
  */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Generic callback result interface
+ */
+interface CallbackResult {
+  url: string;
+  success: boolean;
+  statusCode?: number;
+  error?: string;
+}
+
+/**
+ * Send a single callback with retry support
+ * Stepper remains agnostic - just sends raw JSON to the URL
+ */
+async function sendCallback(
+  callback: WebhookCallback,
+  payload: any
+): Promise<CallbackResult> {
+  const maxAttempts = callback.retry?.maxAttempts ?? 3;
+  const backoffMs = callback.retry?.backoffMs ?? 1000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await fetch(callback.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Stepper/1.0',
+          'X-Stepper-Timestamp': Date.now().toString(),
+          ...callback.headers,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (response.ok) {
+        logger.info({ url: callback.url, attempt }, 'Callback succeeded');
+        return { url: callback.url, success: true, statusCode: response.status };
+      }
+
+      // Retry on server errors or rate limits
+      if ((response.status >= 500 || response.status === 429) && attempt < maxAttempts) {
+        const delay = backoffMs * Math.pow(2, attempt - 1);
+        logger.warn({ url: callback.url, status: response.status, delay }, 'Retrying callback');
+        await sleep(delay);
+        continue;
+      }
+
+      logger.error({ url: callback.url, status: response.status }, 'Callback failed');
+      return { url: callback.url, success: false, statusCode: response.status };
+    } catch (error) {
+      if (attempt < maxAttempts) {
+        const delay = backoffMs * Math.pow(2, attempt - 1);
+        logger.warn({ url: callback.url, error: error instanceof Error ? error.message : String(error), delay }, 'Callback error, retrying');
+        await sleep(delay);
+        continue;
+      }
+      return {
+        url: callback.url,
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  return { url: callback.url, success: false, error: 'Max attempts exceeded' };
+}
+
+/**
+ * Execute all configured callbacks with raw result payload
+ * Stepper remains agnostic - callers decide what to do with the result
+ */
+async function executeCallbacks(
+  callbacks: WebhookCallback[],
+  payload: {
+    success: boolean;
+    result?: ReportOutput;
+    error?: string;
+    metadata: {
+      jobId: string;
+      userId: string;
+      commitSha: string;
+      repo: string;
+      provider?: string;
+      generationTimeMs?: number;
+      timestamp: string;
+    };
+  }
+): Promise<CallbackResult[]> {
+  const results: CallbackResult[] = [];
+
+  for (const callback of callbacks) {
+    const result = await sendCallback(callback, payload);
+    results.push(result);
+
+    if (!result.success && !callback.continueOnFailure) {
+      logger.warn({ url: callback.url }, 'Callback failed, stopping chain');
+      break;
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -244,6 +348,32 @@ export async function generateReportNow(input: PromptInput, jobId: string = 'imm
         timings: { totalMs, providerMs: durationMs },
       });
 
+      // Execute configured callbacks immediately after success
+      // This ensures delivery even if subsequent DB operations fail
+      if (input.callbacks && input.callbacks.length > 0) {
+        const callbackPayload = {
+          success: true,
+          result,
+          metadata: {
+            jobId,
+            userId: input.userId,
+            commitSha: input.commitSha,
+            repo: input.repo,
+            provider: providerName,
+            generationTimeMs: totalMs,
+            timestamp: new Date().toISOString(),
+          },
+        };
+
+        executeCallbacks(input.callbacks, callbackPayload)
+          .then((callbackResults: CallbackResult[]) => {
+            log.info({ callbackResults: callbackResults.map(r => ({ url: r.url, success: r.success })) }, 'Callbacks executed');
+          })
+          .catch((err: unknown) => {
+            log.error({ error: err instanceof Error ? err.message : String(err) }, 'Callbacks execution error');
+          });
+      }
+
       return {
         result,
         usedProvider: providerName,
@@ -276,21 +406,23 @@ export async function generateReportNow(input: PromptInput, jobId: string = 'imm
     }
   }
 
-  // All providers failed - generate fallback
+  // All providers failed - throw error to retry job instead of using fallback
   const totalMs = Date.now() - startTime;
-  log.warn({ totalMs, providersAttempted: providersAttempted.length }, 'All providers failed, using fallback');
+  log.error({ totalMs, providersAttempted: providersAttempted.length }, 'All providers failed, job will be retried');
 
-  const fallbackResult = generateTemplateFallback(input);
+  // FALLBACK DISABLED: Throw error to let BullMQ retry the job
+  throw new Error(`All ${providersAttempted.length} provider(s) failed. Job will retry.`);
 
-  await invokeCallback('onFallback', jobId, fallbackResult, { providersAttempted });
-
-  return {
-    result: fallbackResult,
-    usedProvider: 'fallback',
-    providersAttempted,
-    fallback: true,
-    timings: { totalMs },
-  };
+  // ORIGINAL FALLBACK CODE (commented out):
+  // const fallbackResult = generateTemplateFallback(input);
+  // await invokeCallback('onFallback', jobId, fallbackResult, { providersAttempted });
+  // return {
+  //   result: fallbackResult,
+  //   usedProvider: 'fallback',
+  //   providersAttempted,
+  //   fallback: true,
+  //   timings: { totalMs },
+  // };
 }
 
 /**

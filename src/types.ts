@@ -1,6 +1,24 @@
 // types.ts - Stepper Type Definitions
 
 /**
+ * Generic webhook callback configuration
+ * Stepper sends raw results to these URLs - callers handle transformation
+ */
+export interface WebhookCallback {
+  /** Callback URL to send results */
+  url: string;
+  /** Custom headers (auth tokens, content-type, etc.) */
+  headers?: Record<string, string>;
+  /** Continue to next callback even if this one fails */
+  continueOnFailure?: boolean;
+  /** Retry configuration */
+  retry?: {
+    maxAttempts: number;
+    backoffMs: number;
+  };
+}
+
+/**
  * Input to generate a commit report
  */
 export interface PromptInput {
@@ -12,6 +30,13 @@ export interface PromptInput {
   components: string[];
   diffSummary: string;
   template?: string;
+  
+  /**
+   * Multiple webhook callbacks for resilience
+   * Stepper will call each in order, sending the raw result
+   * Use continueOnFailure: true to ensure all callbacks are attempted
+   */
+  callbacks?: WebhookCallback[];
 }
 
 /**
@@ -158,6 +183,12 @@ export interface StepperConfig {
   queue: {
     name: string;
     concurrency: number;
+  };
+  webhook: {
+    enabled: boolean;
+    secret: string;
+    maxRetries: number;
+    retryDelayMs: number;
   };
   retry: {
     maxAttemptsPerProvider: number;

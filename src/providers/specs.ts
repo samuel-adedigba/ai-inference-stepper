@@ -1,30 +1,44 @@
-import { ProviderSpec } from './unified.adapter.js';
+import { ProviderSpec } from "./unified.adapter";
+
 
 /**
  * All AI provider specifications
  * Add new providers here without creating new files
+ * 
+ * NOTE: Some providers have unique requirements that differ from standard HTTP APIs.
+ * See README.md for provider-specific documentation.
  */
 export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
-    // Google Gemini
+    /**
+     * Google Gemini (Gemini 3 Models)
+     * 
+     * UNIQUE REQUIREMENTS:
+     * 1. API Key: Passed in URL query parameter (?key=YOUR_KEY), NOT in headers
+     * 2. Temperature: MUST be 1.0 for Gemini 3 (Google requirement for optimal performance)
+     * 3. Prompt Structure: Uses XML-style tags (implemented in buildGeminiPrompt())
+     * 4. Model Format: Uses versioned names like 'gemini-2.5-flash'
+     * 
+     * Reference: https://ai.google.dev/gemini-api/docs/prompting-strategies
+     */
     gemini: {
         name: 'gemini',
         baseUrl: 'https://generativelanguage.googleapis.com',
-        endpoint: '/v1/models/{model}:generateContent',
+        endpoint: '/v1beta/models/{model}:generateContent',
         apiKeyEnvVar: 'GEMINI_API_KEY',
-        defaultModel: 'gemini-pro',
+        defaultModel: 'gemini-2.5-flash', // Gemini 3 model optimized for speed and intelligence
 
-        buildHeaders: (apiKey) => ({
+        buildHeaders: (_apiKey) => ({
             'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey || '',
+            // NOTE: API key is NOT in headers for Gemini - it's appended to URL in unified.adapter.ts
         }),
 
         buildBody: (prompt, _model) => ({
             contents: [{ parts: [{ text: prompt }] }],
             generationConfig: {
-                temperature: 0.3,
+                temperature: 1.0, // CRITICAL: Must be 1.0 for Gemini 3. Do NOT change. See: https://ai.google.dev/gemini-api/docs/prompting-strategies
                 topK: 40,
                 topP: 0.95,
-                maxOutputTokens: 2048,
+                maxOutputTokens: 4096, // Increased from 2048 for more detailed commit analysis
             },
         }),
 

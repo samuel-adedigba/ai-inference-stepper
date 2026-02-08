@@ -1,479 +1,228 @@
-# @commitdiary/stepper
+# Stepper: Production-Grade AI Inference Orchestrator
 
-Production-grade AI inference orchestrator with multi-provider fallback, Redis-backed caching and queueing, rate limiting, circuit breakers, and comprehensive observability.
+[![CI Status](https://github.com/samuel-adedigba/ai-inference-stepper/actions/workflows/ci.yml/badge.svg)](https://github.com/samuel-adedigba/ai-inference-stepper/actions)
+[![License: Custom](https://img.shields.io/badge/License-Attribution%20Required-blue.svg)](#license)
+[![DeepMind Tech](https://img.shields.io/badge/Built%20With-TypeScript%20%26%20Node.js-informational)](https://www.typescriptlang.org/)
 
-## Features
+**Stepper** is a resilient, multi-provider AI inference engine designed for high-load production environments. It handles provider fallbacks, intelligent caching, job queuing, and circuit breaking out of the box.
 
-- **Multi-provider fallback**: Automatically tries providers in priority order
-- **Resilient**: Circuit breakers, retries with exponential backoff, Retry-After header support
-- **Cached**: Redis-backed caching with hydrated/dehydrated states and stale-while-revalidate
-- **Async queueing**: BullMQ job queue with background workers
-- **Rate limiting**: Per-provider Bottleneck limiters with configurable RPS and concurrency
-- **Observable**: Prometheus metrics, structured logging (pino), Discord alerts
-- **Secure**: CORS, rate limiting, Helmet security headers, optional API key auth, PII redaction
-- **Testable**: Mocked providers in tests, comprehensive unit and integration coverage
-- **Extensible**: Clean provider adapter interface, lifecycle callbacks for custom logic
+- Back to root: [../../README.md](../../README.md)
+- CommitDiary packages: [../api/README.md](../api/README.md) • [../web-dashboard/README.md](../web-dashboard/README.md) • [../extension/README.md](../extension/README.md) • [../core/README.md](../core/README.md)
 
-## Security
+## ✅ Standalone Setup (Local)
 
-The server includes comprehensive security measures, all configurable via environment variables:
+Stepper is open source and can run independently or inside this monorepo.
 
-### 1. CORS (Cross-Origin Resource Sharing)
+### Prerequisites
 
-Controls which origins can access your API.
+- Node.js 18+
+- pnpm
+- Redis (required)
 
-```bash
-CORS_ENABLED=true                    # Enable/disable CORS (default: true)
-CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://app.yourdomain.com  # Comma-separated
-CORS_ALLOW_CREDENTIALS=false         # Allow cookies/auth headers (default: false)
-```
-
-### 2. Rate Limiting
-
-Protects against abuse and DDoS attacks with both IP-based and user-based limits.
-
-```bash
-RATE_LIMIT_ENABLED=true              # Enable/disable rate limiting (default: true)
-RATE_LIMIT_WINDOW_MS=900000          # Time window in ms (default: 15 minutes)
-RATE_LIMIT_MAX_REQUESTS=100          # Max requests per window per IP (default: 100)
-RATE_LIMIT_MAX_PER_USER=50           # Max requests per window per userId (default: 50)
-RATE_LIMIT_SKIP_HEALTH=true          # Skip limits for /health, /metrics (default: true)
-```
-
-Rate limit responses include `RateLimit-*` headers and a 429 status:
-
-```json
-{
-  "error": "Too many requests",
-  "message": "You have exceeded the rate limit. Please try again later.",
-  "retryAfter": 900
-}
-```
-
-### 3. Security Headers (Helmet)
-
-Adds HTTP headers to protect against common web vulnerabilities (XSS, clickjacking, etc.).
-
-```bash
-HELMET_ENABLED=true                  # Enable/disable Helmet (default: true)
-```
-
-Headers set by Helmet:
-
-- `X-Content-Type-Options: nosniff`
-- `X-Frame-Options: DENY`
-- `Strict-Transport-Security` (HSTS)
-- `Content-Security-Policy`
-- And more...
-
-### 4. API Key Authentication
-
-Optional authentication layer for API access.
-
-```bash
-API_KEY_ENABLED=false                # Enable/disable API key (default: false - opt-in)
-API_KEY_HEADER=x-api-key             # Header name for the key (default: x-api-key)
-STEPPER_API_KEY=your_secret_key      # The actual API key (REQUIRED if enabled)
-API_KEY_SKIP_HEALTH=true             # Skip auth for /health, /metrics (default: true)
-```
-
-When enabled, all requests must include the API key:
-
-```bash
-curl -H "x-api-key: your_secret_key" http://localhost:3001/v1/reports
-```
-
-### 5. Proxy Configuration
-
-If running behind a reverse proxy (nginx, ELB, Cloudflare):
-
-```bash
-TRUST_PROXY=1                        # 1=single proxy, true=any, or specific IPs
-```
-
-This ensures correct IP detection for rate limiting.
-
-## Installation
+### Install
 
 ```bash
 cd packages/stepper
 pnpm install
 ```
 
-## Configuration
-
-Copy `.env.example` to `.env` and configure:
+### Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Key environment variables:
+Add at least one provider key and Redis config in .env.
 
-- `REDIS_URL`: Redis connection string (required)
-- `HF_SPACE_ENABLED`: Enable Hugging Face Space provider
-- `HF_SPACE_URL`: Your HF Space endpoint
-- `GEMINI_ENABLED`, `COHERE_ENABLED`: Enable other providers
-- `DISCORD_WEBHOOK_URL`: Optional alert webhook
-
-## Usage
-
-### As a library (in-process)
-
-```typescript
-import {
-  enqueueReport,
-  registerCallbacks,
-  generateReport,
-} from "@commitdiary/stepper";
-
-// Register lifecycle callbacks
-registerCallbacks({
-  onSuccess: (jobId, provider, result, meta) => {
-    console.log(`✅ Job ${jobId} succeeded using ${provider}`);
-  },
-  onFallback: (jobId, result, meta) => {
-    console.warn(`⚠️ Job ${jobId} used fallback template`);
-  },
-  onFailure: (jobId, errors) => {
-    console.error(`❌ Job ${jobId} failed:`, errors);
-  },
-});
-
-// Enqueue async (non-blocking, returns immediately)
-const result = await enqueueReport({
-  userId: "user_123",
-  commitSha: "abc123def456",
-  repo: "myorg/myrepo",
-  message: "Fix authentication bug",
-  files: ["src/auth.ts", "src/middleware/auth.ts"],
-  components: ["auth", "middleware"],
-  diffSummary: "+ added token refresh logic\n- removed deprecated method",
-});
-
-if (result.status === 200) {
-  // Cache hit - immediate response
-  console.log("Cached report:", result.data);
-} else {
-  // Enqueued - poll for status
-  console.log("Job ID:", result.jobId);
-}
-
-// Or generate immediately (blocking)
-const immediate = await generateReport({
-  userId: "user_123",
-  commitSha: "abc123",
-  repo: "myorg/myrepo",
-  message: "Refactor API",
-  files: ["src/api.ts"],
-  components: ["api"],
-  diffSummary: "- old implementation\n+ new implementation",
-});
-
-console.log("Provider used:", immediate.usedProvider);
-console.log("Report:", immediate.result);
-```
-
-### As an HTTP service
-
-Start the server:
+### Run
 
 ```bash
-pnpm dev       # Development with watch mode
-pnpm build     # Build TypeScript
-pnpm start     # Production
+docker run -d -p 6379:6379 redis:alpine
+pnpm dev
 ```
 
-#### API Endpoints
+### ✅ Why This Setup Works
 
-**POST /v1/reports** - Enqueue report generation
+- Redis backs cache and queue state for resilient processing
+- Provider adapters allow fallback across multiple AI vendors
+- Callbacks let CommitDiary save reports and notify users reliably
 
-```bash
-curl -X POST http://localhost:3001/v1/reports \
-  -H "Content-Type: application/json" \
-  -d '{
-    "userId": "user_123",
-    "commitSha": "abc123",
-    "repo": "myorg/myrepo",
-    "message": "Fix bug",
-    "files": ["src/app.ts"],
-    "components": ["app"],
-    "diffSummary": "+ fixed validation"
-  }'
-```
+---
 
-Response (cached):
+## 🏗️ Architecture First
 
-```json
-{
-  "status": "completed",
-  "cached": true,
-  "data": { "title": "...", "summary": "...", ... }
-}
-```
-
-Response (enqueued):
-
-```json
-{
-  "status": "queued",
-  "jobId": "uuid-here",
-  "statusUrl": "/v1/reports/uuid-here"
-}
-```
-
-**GET /v1/reports/:jobId** - Get job status
-
-```bash
-curl http://localhost:3001/v1/reports/uuid-here
-```
-
-**GET /health** - Health check
-
-```bash
-curl http://localhost:3001/health
-```
-
-**GET /metrics** - Prometheus metrics
-
-```bash
-curl http://localhost:3001/metrics
-```
-
-## Provider Setup
-
-### Hugging Face Space
-
-1. Deploy your model to HF Space with a `/api/infer` endpoint:
-
-```python
-# app.py in HF Space
-from fastapi import FastAPI
-import json
-
-app = FastAPI()
-
-@app.post("/api/infer")
-async def infer(request: dict):
-    prompt = request["prompt"]
-    # Your model inference here
-    report = generate_report(prompt)
-    return {"report": json.dumps(report)}
-```
-
-2. Configure stepper:
-
-```bash
-HF_SPACE_ENABLED=true
-HF_SPACE_URL=https://your-username-your-space.hf.space
-HF_SPACE_API_KEY=hf_your_key_here  # Optional
-```
-
-### Adding Custom Providers
-
-Implement the `ProviderAdapter` interface:
-
-```typescript
-import { ProviderAdapter } from "./providers/provider.interface.js";
-import { PromptInput, ReportOutput } from "./types.js";
-
-export class MyCustomAdapter implements ProviderAdapter {
-  readonly name = "my-provider";
-
-  async call(input: PromptInput): Promise<ReportOutput> {
-    // Call your provider API
-    // Parse response
-    // Validate with zod
-    // Return ReportOutput
-  }
-}
-```
-
-Register in config.ts:
-
-```typescript
-{
-  name: 'my-provider',
-  enabled: process.env.MY_PROVIDER_ENABLED === 'true',
-  baseUrl: process.env.MY_PROVIDER_URL,
-  // ...
-}
-```
-
-## Testing
-
-```bash
-pnpm test              # Run all tests
-pnpm test:watch        # Watch mode
-```
-
-Tests use mocked providers and ioredis-mock. No real API calls.
-
-## Deployment
-
-### Docker
-
-```bash
-pnpm docker:build
-pnpm docker:run
-```
-
-Or:
-
-```bash
-docker build -t commitdiary-stepper .
-docker run -p 3001:3001 --env-file .env commitdiary-stepper
-```
-
-### Railway / Render
-
-1. Connect GitHub repo
-2. Set environment variables from `.env.example`
-3. Deploy
-
-### GitHub Actions CI
-
-CI runs automatically on push. See `.github/workflows/ci.yml`.
-
-## Monitoring
-
-### Prometheus Metrics
-
-Exposed at `/metrics`:
-
-- `ai_requests_total{provider, status}`
-- `ai_request_duration_seconds{provider}`
-- `cache_hits_total{status}`
-- `cache_misses_total`
-- `provider_failures_total{provider, reason}`
-- `jobs_processed_total{status}`
-
-### Grafana Dashboard
-
-Import metrics into Grafana:
-
-1. Add Prometheus data source pointing to stepper `/metrics`
-2. Create panels for provider success rate, latency, cache hit ratio, queue size
-3. Set up alerts for circuit breaker opens and error rates
-
-### Discord Alerts
-
-Set `DISCORD_WEBHOOK_URL` in `.env`. Critical errors and circuit breaker events will post to Discord.
-
-## Integration with CommitDiary
-
-### From `packages/api`
-
-In-process import:
-
-````typescript
-import { enqueueReport, registerCallbacks } from '@commitdiary/stepper';
-
-// In your commit webhook handler
-const result = await enqueueReport({
-  userId: req.user.id,
-  commitSha: commit.sha,
-  repo: commit.repo,
-  message: commit.message,
-  files: commit.files,
-  components: extractComponents(commit),
-  diffSummary: commit.diff,
-});
-
-if (result.status === 200) {
-    // Send to Slack/Discord immediately
-await sendToChannel(result.data);
-} else {
-// Worker will handle async and callback will notify
-}
-
-Register callbacks to send notifications:
-```typescript
-registerCallbacks({
-  onSuccess: async (jobId, provider, result) => {
-    await sendSlackMessage({
-      text: `✅ Report generated for commit ${jobId}`,
-      blocks: formatReport(result),
-    });
-  },
-});
-````
-
-### As a separate service
-
-Deploy stepper as its own service and call via HTTP:
-
-```typescript
-const response = await fetch("https://stepper.commitdiary.com/v1/reports", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    userId,
-    commitSha,
-    repo,
-    message,
-    files,
-    components,
-    diffSummary,
-  }),
-});
-
-const data = await response.json();
-```
-
-## Architecture
+Understanding how Stepper handles your requests is key to using its full power.
 
 ![Stepper Architecture](./docs/assets/architecture.png)
 
-Client Request
-│
-├─> Check Redis Cache
-│ ├─> Fresh Hit → Return immediately
-│ ├─> Stale Hit → Return + background refresh
-│ └─> Miss → Enqueue job
-│
-└─> BullMQ Queue
-│
-└─> Worker picks job
-│
-└─> Orchestrator
-├─> Try Provider 1 (Bottleneck + Circuit Breaker)
-├─> Try Provider 2 (on failure)
-├─> Try Provider 3 (on failure)
-└─> Fallback Template (all failed)
-│
-└─> Store in Cache + Invoke Callbacks
+### The Core Flow
 
-## Troubleshooting
+1.  **Request Capture**: Received via HTTP or internal Library Call.
+2.  **Smart Caching**: Checks Redis. Supports **Stale-While-Revalidate** (returns stale data while refreshing in background).
+3.  **Job Queueing**: If not cached, the request is enqueued via **BullMQ** to prevent overloading providers.
+4.  **Resilient Orchestration**:
+    - **Priority Fallback**: Tries Gemini → Cohere → HF Space in sequence.
+    - **Circuit Breakers**: Stops calling failing providers to allow them to recover.
+    - **Rate Limiting**: Per-provider bottlenecking to respect API quotas.
+5.  **Finalize**: Result is cached, and `onSuccess` callbacks are triggered.
 
-**Redis connection fails**:
+> [!TIP]
+> For a deep dive into the system design, see [ARCHITECTURE.md](./ARCHITECTURE.md).
 
-- Check `REDIS_URL` is correct
-- Ensure Redis is running: `redis-cli ping`
+---
 
-**Provider timeouts**:
+## 🔗 CommitDiary Integration Flow
 
-- Increase `*_TIMEOUT` env vars
-- Check provider API quotas and rate limits
-- Review circuit breaker states: `GET /health`
+```mermaid
+flowchart LR
+  A[API Server] --> B[Stepper enqueueReport]
+  B --> C[Queue + Providers]
+  C --> D[Callback to API]
+  D --> E[Report saved + webhooks]
+```
 
-**All providers fail**:
+### How CommitDiary Uses Stepper
 
-- Check API keys are set correctly
-- Review logs for auth errors
-- Ensure providers are enabled (`*_ENABLED=true`)
+- API calls Stepper to generate commit reports
+- Stepper returns a jobId or cached result
+- Stepper posts back to API callbacks for delivery and persistence
 
-**Tests fail**:
+See API docs for endpoints and callbacks: [../api/README.md](../api/README.md)
 
-- Ensure no Redis required (tests use ioredis-mock)
-- Run `pnpm install` to get devDependencies
+---
 
-## License
+## 🧩 Component Deep Dives
 
-MIT
+Stepper is modular. Explore each subsystem's technical documentation:
 
-## Contributing
+| Component         | Purpose                          | Technical Details                           |
+| :---------------- | :------------------------------- | :------------------------------------------ |
+| **⚡ Cache**      | Intelligent Redis strategies     | [Cache Guide](./src/cache/README.md)        |
+| **🤖 Providers**  | Adapter logic for different LLMs | [Provider Specs](./src/providers/README.md) |
+| **📥 Queue**      | Background processing & retries  | [Queue System](./src/queue/README.md)       |
+| **📊 Metrics**    | Prometheus & Observability       | [Metrics Docs](./src/metrics/README.md)     |
+| **🛡️ Alerts**     | Discord & error notifications    | [Alerts System](./src/alerts/README.md)     |
+| **✅ Validation** | Zod-based strict output parsing  | [Validation](./src/validation/README.md)    |
 
-1. Add tests for new features
-2. Run `pnpm lint` before committing
-3. Update README for API changes
+### 🌟 Provider-Specific Optimizations
+
+#### Google Gemini (Gemini 3 Models)
+
+Stepper includes specialized optimizations for Google's Gemini 3 models based on [official Google prompting strategies](https://ai.google.dev/gemini-api/docs/prompting-strategies).
+
+**Why Gemini is Different:**
+- **XML-Structured Prompts**: Uses `<role>`, `<instructions>`, `<context>`, `<task>` tags for better model understanding
+- **Query Parameter Authentication**: API key passed in URL (`?key=YOUR_KEY`) instead of headers
+- **Locked Temperature**: Must use `temperature: 1.0` (Google requirement for optimal Gemini 3 performance)
+- **Increased Token Limit**: 4096 tokens for detailed analysis
+
+**Conditional Implementation:**
+```typescript
+if (provider === 'gemini') {
+    // Use XML-structured prompt
+    prompt = buildGeminiPrompt(input);
+    // Append API key to URL
+    endpoint = `${endpoint}?key=${apiKey}`;
+}
+```
+
+This pattern allows each provider to have unique optimizations while maintaining clean code separation. See [Provider Documentation](./src/providers/README.md#-provider-specific-implementations) for details.
+
+---
+
+## ⚡ Quick Start (3 Minutes)
+
+### 1. Install Dependencies
+
+```bash
+pnpm install
+```
+
+### 2. Configure Environment
+
+Copy the example and add your API keys:
+
+```bash
+cp .env.example .env
+```
+
+### 3. Spin Up Redis & Stepper
+
+```bash
+# Start Redis (Required)
+docker run -d -p 6379:6379 redis:alpine
+
+# Start in Dev Mode
+pnpm dev
+```
+
+---
+
+## 🧭 Monorepo Notes
+
+- API expects Stepper at STEPPER_URL (default http://localhost:3005)
+- If running inside the monorepo, keep API and Stepper dev servers up
+- See root setup guide: [../../README.md](../../README.md)
+
+---
+
+## 🛠️ Usage Modes
+
+### Mode A: As a Library (Direct Integration)
+
+Best for monorepos or when you want to avoid network overhead.
+
+```typescript
+import { enqueueReport, registerCallbacks } from "@commitdiary/stepper";
+
+// 1. Setup notification logic
+registerCallbacks({
+  onSuccess: (id, provider, data) => console.log(`✅ Success via ${provider}`),
+  onFailure: (id, errors) => console.error("❌ Failed:", errors),
+});
+
+// 2. Trigger a request (returns immediately if queued or cached)
+const result = await enqueueReport({
+  commitSha: "abc123",
+  message: "Fix bug",
+  // ...other input
+});
+```
+
+### Mode B: As an HTTP Service
+
+Best for microservices or remote deployments (Render/Railway).
+
+```bash
+# Send a report generation request
+curl -X POST http://localhost:3001/v1/reports \
+  -H "Content-Type: application/json" \
+  -d '{ "message": "Refactor API", "files": ["src/app.ts"] }'
+
+# Response gives you a JobID to poll
+# { "status": "queued", "jobId": "...", "statusUrl": "..." }
+```
+
+---
+
+## 🤝 Contributing & Community
+
+We love contributors! Whether it's a bug report or a new provider adapter:
+
+- **Issues**: Found a bug? [Raise an issue](https://github.com/samuel-adedigba/ai-inference-stepper/issues).
+- **Pull Requests**: Have a fix? [Open a PR](https://github.com/samuel-adedigba/ai-inference-stepper/pulls).
+
+If contributing inside the CommitDiary monorepo, start at [../../README.md](../../README.md) for the full workflow.
+
+---
+
+## 📜 License
+
+**Custom Attribution License**
+
+You are free to use, modify, and distribute this software for personal or commercial projects, provided that:
+
+1.  **Credit is given**: You must attribute the original work to **Samuel Adedigba (@samuel-adedigba)**.
+2.  **Pull Requests**: Contributions and improvements are encouraged back to this core repository.
+
+_For full details, see the [LICENSE](./LICENSE) file (MIT-based with attribution)._

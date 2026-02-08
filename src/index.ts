@@ -32,10 +32,10 @@ function computeTemplateHash(template?: string): string {
  * @example
  * registerCallbacks({
  *   onSuccess: (jobId, provider, result) => {
- *     console.log(`Job ${jobId} succeeded using ${provider}`);
+ *     // handle success
  *   },
  *   onFallback: (jobId, result, meta) => {
- *     console.warn(`Job ${jobId} fell back to template`);
+ *     // handle fallback
  *   }
  * });
  */
@@ -65,9 +65,9 @@ export function registerCallbacks(callbacks: StepperCallbacks): void {
  * });
  * 
  * if (result.status === 200) {
- *   console.log('Cached:', result.data);
+ *   // handle cached result
  * } else {
- *   console.log('Enqueued:', result.jobId);
+ *   // handle enqueued result
  * }
  */
 export async function enqueueReport(
@@ -144,8 +144,7 @@ export async function enqueueReport(
  *   diffSummary: '- old code\n+ new code'
  * });
  * 
- * console.log('Provider used:', result.usedProvider);
- * console.log('Report:', result.result);
+ * // handle provider and report result
  */
 export async function generateReport(input: PromptInput): Promise<ProviderResult> {
     const jobId = `sync_${Date.now()}`;

@@ -20,6 +20,11 @@ let isInitialized = false;
 
 function ensureInitialized(): void {
     if (!isInitialized) {
+        const existingProviders = getProviderHealth();
+        if (existingProviders.length > 0) {
+            isInitialized = true;
+            return;
+        }
         initStepper();
     }
 }

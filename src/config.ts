@@ -109,6 +109,9 @@ export function loadConfig(): StepperConfig {
 
   return {
     providers: allProviders,
+    fallback: {
+      enabled: process.env.FALLBACK_ENABLED !== 'false',
+    },
     redis: {
       url: redisUrl,
       keyPrefix: process.env.REDIS_KEY_PREFIX || 'stepper:',

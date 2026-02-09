@@ -8,7 +8,7 @@ import { createProviderAdapter } from '../providers/factory.js';
 import { PromptInput, ReportOutput, ProviderResult, ProviderAttemptMeta, StepperCallbacks, ProviderConfig, WebhookCallback } from '../types.js';
 import { config } from '../config.js';
 import { logger, createChildLogger } from '../logging.js';
-// import { generateTemplateFallback } from '../fallback/templateFallback.js'; // DISABLED: Fallback removed to force retries
+import { generateTemplateFallback } from '../fallback/templateFallback.js';
 import { recordProviderAttempt, recordProviderSuccess, recordProviderFailure } from '../metrics/metrics.js';
 import { isRetryableError } from '../utils/safeRequest.js';
 import { alertProviderFailure, alertCircuitOpen } from '../alerts/discord.js';
@@ -406,23 +406,23 @@ export async function generateReportNow(input: PromptInput, jobId: string = 'imm
     }
   }
 
-  // All providers failed - throw error to retry job instead of using fallback
+  // All providers failed
   const totalMs = Date.now() - startTime;
   log.error({ totalMs, providersAttempted: providersAttempted.length }, 'All providers failed, job will be retried');
 
-  // FALLBACK DISABLED: Throw error to let BullMQ retry the job
-  throw new Error(`All ${providersAttempted.length} provider(s) failed. Job will retry.`);
+  if (!config.fallback.enabled) {
+    throw new Error(`All ${providersAttempted.length} provider(s) failed. Job will retry.`);
+  }
 
-  // ORIGINAL FALLBACK CODE (commented out):
-  // const fallbackResult = generateTemplateFallback(input);
-  // await invokeCallback('onFallback', jobId, fallbackResult, { providersAttempted });
-  // return {
-  //   result: fallbackResult,
-  //   usedProvider: 'fallback',
-  //   providersAttempted,
-  //   fallback: true,
-  //   timings: { totalMs },
-  // };
+  const fallbackResult = generateTemplateFallback(input);
+  await invokeCallback('onFallback', jobId, fallbackResult, { providersAttempted });
+  return {
+    result: fallbackResult,
+    usedProvider: 'fallback',
+    providersAttempted,
+    fallback: true,
+    timings: { totalMs },
+  };
 }
 
 /**

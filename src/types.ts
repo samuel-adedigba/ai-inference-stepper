@@ -171,6 +171,9 @@ export interface ProviderConfig {
 export interface StepperConfig {
   providers: ProviderConfig[];
   providerConfigs?: ProviderConfig[];
+  fallback: {
+    enabled: boolean;
+  };
   redis: {
     url: string;
     keyPrefix: string;

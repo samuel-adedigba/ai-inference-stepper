@@ -1,5 +1,36 @@
 import { ProviderSpec } from "./unified.adapter";
 
+type PathKey = string | number;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getNested(value: unknown, path: PathKey[]): unknown {
+    let current: unknown = value;
+    for (const key of path) {
+        if (typeof key === 'number') {
+            if (!Array.isArray(current) || current.length <= key) {
+                return undefined;
+            }
+            current = current[key];
+            continue;
+        }
+
+        if (!isRecord(current)) {
+            return undefined;
+        }
+
+        current = current[key];
+    }
+    return current;
+}
+
+function getString(value: unknown, path: PathKey[]): string | undefined {
+    const result = getNested(value, path);
+    return typeof result === 'string' ? result : undefined;
+}
+
 
 /**
  * All AI provider specifications
@@ -43,7 +74,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+            const text = getString(data, ['candidates', 0, 'content', 'parts', 0, 'text']);
             if (!text) throw new Error('Invalid Gemini response structure');
             return text;
         },
@@ -74,7 +105,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.choices?.[0]?.message?.content;
+            const text = getString(data, ['choices', 0, 'message', 'content']);
             if (!text) throw new Error('Invalid OpenAI response structure');
             return text;
         },
@@ -102,7 +133,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.content?.[0]?.text;
+            const text = getString(data, ['content', 0, 'text']);
             if (!text) throw new Error('Invalid Anthropic response structure');
             return text;
         },
@@ -130,7 +161,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.text;
+            const text = getString(data, ['text']);
             if (!text) throw new Error('Invalid Cohere response structure');
             return text;
         },
@@ -160,7 +191,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.choices?.[0]?.message?.content;
+            const text = getString(data, ['choices', 0, 'message', 'content']);
             if (!text) throw new Error('Invalid DeepSeek response structure');
             return text;
         },
@@ -191,7 +222,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.choices?.[0]?.message?.content;
+            const text = getString(data, ['choices', 0, 'message', 'content']);
             if (!text) throw new Error('Invalid Groq response structure');
             return text;
         },
@@ -223,7 +254,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.choices?.[0]?.message?.content;
+            const text = getString(data, ['choices', 0, 'message', 'content']);
             if (!text) throw new Error('Invalid OpenRouter response structure');
             return text;
         },
@@ -253,7 +284,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.choices?.[0]?.message?.content;
+            const text = getString(data, ['choices', 0, 'message', 'content']);
             if (!text) throw new Error('Invalid Mistral response structure');
             return text;
         },
@@ -283,7 +314,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.choices?.[0]?.message?.content;
+            const text = getString(data, ['choices', 0, 'message', 'content']);
             if (!text) throw new Error('Invalid Perplexity response structure');
             return text;
         },
@@ -313,7 +344,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = {
         }),
 
         parseResponse: (data) => {
-            const text = data?.choices?.[0]?.message?.content;
+            const text = getString(data, ['choices', 0, 'message', 'content']);
             if (!text) throw new Error('Invalid Together AI response structure');
             return text;
         },

@@ -9,12 +9,23 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./server": {
+      "import": "./dist/server/start.js",
+      "types": "./dist/server/start.d.ts"
+    },
+    "./app": {
+      "import": "./dist/server/app.js",
+      "types": "./dist/server/app.d.ts"
     }
+  },
+  "bin": {
+    "stepper": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
-    "dev": "tsx watch src/server/app.ts",
-    "start": "node dist/server/app.js",
+    "dev": "tsx watch src/server/start.ts",
+    "start": "node dist/server/start.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",

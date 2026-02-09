@@ -173,7 +173,17 @@ pnpm dev
 Best for monorepos or when you want to avoid network overhead.
 
 ```typescript
-import { enqueueReport, registerCallbacks } from "@commitdiary/stepper";
+import { enqueueReport, registerCallbacks, initStepper } from "@commitdiary/stepper";
+
+// Optional: programmatic config overrides (no env file required)
+initStepper({
+  config: {
+    redis: { url: "redis://localhost:6379" },
+  },
+  providers: [
+    { name: "gemini", enabled: true, apiKey: process.env.GEMINI_API_KEY, baseUrl: "https://generativelanguage.googleapis.com/v1", modelName: "gemini-pro", concurrency: 2, rateLimitRPM: 5 }
+  ]
+});
 
 // 1. Setup notification logic
 registerCallbacks({
@@ -198,6 +208,29 @@ Best for microservices or remote deployments (Render/Railway).
 curl -X POST http://localhost:3001/v1/reports \
   -H "Content-Type: application/json" \
   -d '{ "message": "Refactor API", "files": ["src/app.ts"] }'
+
+#### CLI (npm)
+
+```bash
+# One-off run
+npx @commitdiary/stepper
+
+# Or install and run
+npm i -g @commitdiary/stepper
+stepper
+```
+
+#### Environment Setup (Service Mode)
+
+Stepper reads config from environment variables. Use .env for local runs:
+
+```bash
+cp .env.example .env
+```
+
+If you install Stepper as a library, you can either:
+- Provide env variables in your host app process (recommended for deployments), or
+- Call `initStepper({ config, providers })` programmatically to override defaults.
 
 # Response gives you a JobID to poll
 # { "status": "queued", "jobId": "...", "statusUrl": "..." }

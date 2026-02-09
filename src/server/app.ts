@@ -1,6 +1,5 @@
 // packages/stepper/src/server/app.ts
 
-import 'dotenv/config';
 import express, { Request, Response, NextFunction, Application } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -9,9 +8,6 @@ import { enqueueReport, generateReport, getJob, healthcheck, deleteReport, Promp
 import { getMetrics } from '../metrics/metrics.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
-import { startWorker, stopWorker } from '../queue/worker.js';
-import { closeRedis } from '../cache/redisCache.js';
-import { closeQueue } from '../queue/producer.js';
 
 const app: Application = express();
 
@@ -449,62 +445,6 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({
     error: 'Internal server error',
     message: err.message,
-  });
-});
-
-// =============================================================================
-// SERVER STARTUP
-// =============================================================================
-
-const port = config.server.port;
-
-const server = app.listen(port, () => {
-  logger.info({ port }, 'Server started');
-
-  // Log security status
-  logger.info({
-    cors: config.security.cors.enabled,
-    rateLimit: config.security.rateLimit.enabled,
-    helmet: config.security.helmet.enabled,
-    apiKey: config.security.apiKey.enabled,
-  }, 'Security configuration');
-
-  // Log webhook system status
-  if (process.env.DISCORD_WEBHOOK_URL) {
-    logger.info('Stepper error webhook configured - alerts enabled');
-  } else {
-    logger.info('Stepper error webhook not configured (set DISCORD_WEBHOOK_URL to enable)');
-  }
-
-  // Start worker
-  startWorker();
-});
-
-// =============================================================================
-// GRACEFUL SHUTDOWN
-// =============================================================================
-
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM received, shutting down gracefully');
-
-  server.close(async () => {
-    await stopWorker();
-    await closeQueue();
-    await closeRedis();
-    logger.info('Shutdown complete');
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', async () => {
-  logger.info('SIGINT received, shutting down gracefully');
-
-  server.close(async () => {
-    await stopWorker();
-    await closeQueue();
-    await closeRedis();
-    logger.info('Shutdown complete');
-    process.exit(0);
   });
 });
 

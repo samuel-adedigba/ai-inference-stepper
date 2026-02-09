@@ -1,6 +1,6 @@
 // packages/stepper/src/index.ts
 
-import { PromptInput, ReportOutput, ProviderResult, StepperCallbacks } from './types.js';
+import { PromptInput, ReportOutput, ProviderResult, StepperCallbacks, StepperConfig, ProviderConfig } from './types.js';
 import { logger } from './logging.js';
 import {
     buildCacheKey,
@@ -14,9 +14,31 @@ import { enqueueReportJob, getJobStatus } from './queue/producer.js';
 import { generateReportNow, registerCallbacks as registerOrchestratorCallbacks, initializeProviders, getProviderHealth } from './stepper/orchestrator.js';
 import { recordCacheHit, recordCacheMiss } from './metrics/metrics.js';
 import crypto from 'crypto';
+import { applyConfigOverrides } from './config.js';
 
-// Initialize providers on module load
-initializeProviders();
+let isInitialized = false;
+
+function ensureInitialized(): void {
+    if (!isInitialized) {
+        initStepper();
+    }
+}
+
+/**
+ * Initialize Stepper with optional config overrides.
+ * Useful for npm consumers who want programmatic config instead of env.
+ */
+export function initStepper(options?: { config?: Partial<StepperConfig>; providers?: ProviderConfig[] }): StepperConfig {
+    const overrides: Partial<StepperConfig> = options?.config ? { ...options.config } : {};
+    if (options?.providers) {
+        overrides.providers = options.providers;
+    }
+
+    const nextConfig = applyConfigOverrides(overrides);
+    initializeProviders(nextConfig.providers);
+    isInitialized = true;
+    return nextConfig;
+}
 
 /**
  * Compute template hash for cache key
@@ -76,6 +98,7 @@ export async function enqueueReport(
     | { status: 200; data: ReportOutput; cached: true; stale?: boolean }
     | { status: 202; jobId: string; cached: false }
 > {
+    ensureInitialized();
     const templateHash = computeTemplateHash(input.template);
     const cacheKey = buildCacheKey(input.userId, input.commitSha, templateHash);
 
@@ -147,6 +170,7 @@ export async function enqueueReport(
  * // handle provider and report result
  */
 export async function generateReport(input: PromptInput): Promise<ProviderResult> {
+    ensureInitialized();
     const jobId = `sync_${Date.now()}`;
     return generateReportNow(input, jobId);
 }
@@ -192,6 +216,7 @@ export async function healthcheck(): Promise<{
     providers: Array<{ name: string; healthy: boolean }>;
     timestamp: string;
 }> {
+    ensureInitialized();
     const providerHealth = getProviderHealth();
     const healthyCount = providerHealth.filter((p) => p.healthy).length;
 

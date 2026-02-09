@@ -186,4 +186,77 @@ export function loadConfig(): StepperConfig {
   };
 }
 
-export const config = loadConfig();
+function mergeConfig(base: StepperConfig, overrides: Partial<StepperConfig>): StepperConfig {
+  return {
+    ...base,
+    ...overrides,
+    providers: overrides.providers ?? base.providers,
+    providerConfigs: overrides.providerConfigs ?? base.providerConfigs,
+    redis: {
+      ...base.redis,
+      ...overrides.redis,
+    },
+    cache: {
+      ...base.cache,
+      ...overrides.cache,
+    },
+    queue: {
+      ...base.queue,
+      ...overrides.queue,
+    },
+    webhook: {
+      ...base.webhook,
+      ...overrides.webhook,
+    },
+    retry: {
+      ...base.retry,
+      ...overrides.retry,
+    },
+    circuit: {
+      ...base.circuit,
+      ...overrides.circuit,
+    },
+    security: {
+      ...base.security,
+      ...overrides.security,
+      cors: {
+        ...base.security.cors,
+        ...overrides.security?.cors,
+      },
+      rateLimit: {
+        ...base.security.rateLimit,
+        ...overrides.security?.rateLimit,
+      },
+      helmet: {
+        ...base.security.helmet,
+        ...overrides.security?.helmet,
+      },
+      apiKey: {
+        ...base.security.apiKey,
+        ...overrides.security?.apiKey,
+      },
+    },
+    server: {
+      ...base.server,
+      ...overrides.server,
+    },
+  };
+}
+
+export function createConfig(overrides?: Partial<StepperConfig>): StepperConfig {
+  const base = loadConfig();
+  if (!overrides) {
+    return base;
+  }
+  return mergeConfig(base, overrides);
+}
+
+export let config = loadConfig();
+
+export function applyConfigOverrides(overrides?: Partial<StepperConfig>): StepperConfig {
+  if (!overrides) {
+    return config;
+  }
+  config = mergeConfig(loadConfig(), overrides);
+  return config;
+}

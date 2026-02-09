@@ -18,6 +18,8 @@ services:
         value: "true"
       - key: STEPPER_API_KEY
         generateValue: true
+      - key: API_KEY_HEADER
+        value: "x-api-key"
       - key: CORS_ENABLED
         value: "true"
       - key: RATE_LIMIT_ENABLED

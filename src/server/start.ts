@@ -1,6 +1,7 @@
 // packages/stepper/src/server/start.ts
 
 import 'dotenv/config';
+import { fileURLToPath } from 'url';
 import { initStepper } from '../index.js';
 import { logger } from '../logging.js';
 import { startWorker, stopWorker } from '../queue/worker.js';
@@ -63,6 +64,13 @@ export async function startServer(options?: StartServerOptions): Promise<Running
   };
 
   return { server, shutdown };
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  startServer().catch((error) => {
+    logger.error({ error }, 'Failed to start server');
+    process.exit(1);
+  });
 }
 
 export default startServer;

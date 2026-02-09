@@ -1,5 +1,5 @@
 {
-  "name": "@commitdiary/stepper",
+  "name": "ai-inference-stepper",
   "version": "1.0.0",
   "description": "Production-grade AI inference stepper with multi-provider fallback",
   "type": "module",
@@ -21,6 +21,9 @@
   },
   "bin": {
     "stepper": "./dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",

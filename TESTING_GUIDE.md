@@ -1,4 +1,4 @@
-# Testing Guide for @commitdiary/stepper
+# Testing Guide for ai-inference-stepper
 
 ## ✅ Current Status
 

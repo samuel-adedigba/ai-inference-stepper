@@ -1,4 +1,4 @@
-# @commitdiary/stepper - Architecture & Flow
+# ai-inference-stepper - Architecture & Flow
 
 ## 📍 Entry Points
 
@@ -21,7 +21,7 @@ pnpm start  # Runs: node dist/server/app.js
 **Entry Point:** `src/index.ts` (exported as `dist/index.js`)
 
 ```typescript
-import { enqueueReport, generateReport } from "@commitdiary/stepper";
+import { enqueueReport, generateReport } from "ai-inference-stepper";
 ```
 
 ---

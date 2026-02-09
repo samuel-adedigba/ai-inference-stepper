@@ -173,7 +173,7 @@ pnpm dev
 Best for monorepos or when you want to avoid network overhead.
 
 ```typescript
-import { enqueueReport, registerCallbacks, initStepper } from "@commitdiary/stepper";
+import { enqueueReport, registerCallbacks, initStepper } from "ai-inference-stepper";
 
 // Optional: programmatic config overrides (no env file required)
 initStepper({
@@ -213,11 +213,11 @@ curl -X POST http://localhost:3001/v1/reports \
 
 ```bash
 # One-off run
-npx @commitdiary/stepper
+npx ai-inference-stepper
 
 # Or install and run
-npm i -g @commitdiary/stepper
-stepper
+npm i -g ai-inference-stepper
+ai-inference-stepper
 ```
 
 #### Environment Setup (Service Mode)

@@ -14,3 +14,6 @@ README.internal.md
 *.local.md
 *_private.md
 *_internal.md
+
+# Internal docs
+TESTING_GUIDE.md

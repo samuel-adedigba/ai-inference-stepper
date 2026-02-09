@@ -72,8 +72,17 @@ export function parseAndValidateReport(jsonString: string): {
   error?: string;
 } {
   try {
+    // Check if response looks like HTML (error page) instead of JSON
+    const trimmed = jsonString.trim();
+    if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html') || trimmed.startsWith('<')) {
+      return { 
+        valid: false, 
+        error: 'Received HTML response instead of JSON. This usually indicates an authentication error, rate limiting, or provider service issue.' 
+      };
+    }
+
     // Clean up common AI model output issues
-    let cleaned = jsonString.trim();
+    let cleaned = trimmed;
 
     // Remove markdown code blocks if present
     cleaned = cleaned.replace(/^```json\s*/i, '').replace(/```\s*$/, '');
@@ -85,12 +94,24 @@ export function parseAndValidateReport(jsonString: string): {
       cleaned = jsonMatch[0];
     }
 
+    // Additional check for non-JSON content
+    if (!cleaned.startsWith('{') || !cleaned.endsWith('}')) {
+      return { 
+        valid: false, 
+        error: 'Response does not appear to be valid JSON format. Provider may have returned an error message.' 
+      };
+    }
+
     const parsed = JSON.parse(cleaned);
     return validateReportOutput(parsed);
   } catch (error) {
     if (error instanceof SyntaxError) {
-      return { valid: false, error: `Invalid JSON: ${error.message}` };
+      // Provide more helpful error message for JSON parsing errors
+      return { 
+        valid: false, 
+        error: `Invalid JSON format: ${error.message}. This often happens when the AI provider returns an error page instead of JSON response.` 
+      };
     }
-    return { valid: false, error: 'Failed to parse JSON' };
+    return { valid: false, error: 'Failed to parse JSON response' };
   }
 }

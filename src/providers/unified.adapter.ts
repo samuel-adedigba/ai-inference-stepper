@@ -129,8 +129,16 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
                 logger.warn({
                     provider: this.name,
                     error: validation.error,
-                    responsePreview: responseText.slice(0, 200)
+                    responsePreview: responseText.slice(0, 200),
+                    responseLength: responseText.length,
+                    isHtmlResponse: responseText.trim().startsWith('<')
                 }, `❌ [${this.name}] Validation failed: ${validation.error}`);
+                
+                // If it looks like an HTML error response, provide more specific error
+                if (responseText.trim().startsWith('<')) {
+                    throw new InvalidResponseError(`Provider returned HTML error page instead of JSON. This usually indicates an authentication issue, API key problem, or service outage. Check your API key configuration and provider status.`);
+                }
+                
                 throw new InvalidResponseError(`Validation failed: ${validation.error}`);
             }
 

@@ -1,6 +1,6 @@
 {
   "name": "ai-inference-stepper",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Production-grade AI inference stepper with multi-provider fallback",
   "type": "module",
   "main": "./dist/index.js",

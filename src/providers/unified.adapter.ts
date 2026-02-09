@@ -1,5 +1,5 @@
 import { ProviderAdapter, ProviderError, InvalidResponseError, TimeoutError, RateLimitError, AuthError, ProviderUnavailableError } from './provider.interface.js';
-import { PromptInput, ReportOutput } from '../types.js';
+import { PromptInput, ReportOutput, ProviderErrorType } from '../types.js';
 import { safeRequest, isAuthError, isRateLimitError, RequestError } from '../utils/safeRequest.js';
 import { parseAndValidateReport } from '../validation/report.schema.js';
 import { buildComprehensivePrompt, buildSimplePrompt, buildGeminiPrompt } from './promptBuilder.js';
@@ -15,7 +15,7 @@ export interface ProviderSpec {
     apiKeyEnvVar?: string;
     buildHeaders: (apiKey?: string) => Record<string, string>;
     buildBody: (prompt: string, model?: string) => unknown;
-    parseResponse: (data: any) => string;
+    parseResponse: (data: unknown) => string;
     defaultModel?: string;
     useSimplePrompt?: boolean;
 }
@@ -167,6 +167,6 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
         }
 
         logger.error({ provider: this.name, error }, 'Unexpected provider error');
-        return new ProviderError('Unexpected error', 'UNKNOWN' as any);
+        return new ProviderError('Unexpected error', ProviderErrorType.Unknown);
     }
 }

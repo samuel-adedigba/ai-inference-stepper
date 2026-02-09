@@ -123,7 +123,7 @@ export function startWorker(): void {
     const connection = getRedisClient();
 
     worker = new Worker<ReportJobData>(config.queue.name, processReportJob, {
-        connection: connection as any,
+        connection,
         concurrency: config.queue.concurrency, //(how many jobs it can do at once).
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 500 },

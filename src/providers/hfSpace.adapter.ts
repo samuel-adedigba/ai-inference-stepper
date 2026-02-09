@@ -1,3 +1,4 @@
+import { ProviderErrorType } from '../types.js';
 import { ProviderAdapter, ProviderError, InvalidResponseError, TimeoutError, RateLimitError, AuthError, ProviderUnavailableError } from './provider.interface.js';
 import { PromptInput, ReportOutput } from '../types.js';
 import { safeRequest, isAuthError, isRateLimitError, RequestError } from '../utils/safeRequest.js';
@@ -113,6 +114,6 @@ export class HuggingFaceSpaceAdapter implements ProviderAdapter {
         }
 
         logger.error({ error }, 'Unexpected HF Space error');
-        return new ProviderError('Unexpected error', 'UNKNOWN' as any);
+        return new ProviderError('Unexpected error', ProviderErrorType.Unknown);
     }
 }

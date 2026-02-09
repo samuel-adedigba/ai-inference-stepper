@@ -1,3 +1,4 @@
+import { ProviderErrorType } from '../types.js';
 // packages/stepper/src/providers/httpTemplate.adapter.ts
 
 import { ProviderAdapter, ProviderError, InvalidResponseError, TimeoutError, RateLimitError, AuthError, ProviderUnavailableError } from './provider.interface.js';
@@ -132,6 +133,6 @@ export class HttpTemplateAdapter implements ProviderAdapter {
         }
 
         logger.error({ provider: this.name, error }, 'Unexpected provider error');
-        return new ProviderError('Unexpected error', 'UNKNOWN' as any);
+        return new ProviderError('Unexpected error', ProviderErrorType.Unknown);
     }
 }

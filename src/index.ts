@@ -163,7 +163,7 @@ export async function getJob(jobId: string): Promise<{
     progress?: number;
     result?: unknown;
     failedReason?: string;
-    data?: any;
+    data?: unknown;
 } | null> {
     return getJobStatus(jobId);
 }

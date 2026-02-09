@@ -15,9 +15,7 @@ let queue: Queue<ReportJobData> | null = null;
 export function getQueue(): Queue<ReportJobData> {
     if (!queue) {
         const connection = getRedisClient();
-        queue = new Queue<ReportJobData>(config.queue.name, {
-            connection: connection as any, // BullMQ expects Redis client
-        });
+        queue = new Queue<ReportJobData>(config.queue.name, { connection });
 
         logger.info({ queueName: config.queue.name }, 'BullMQ queue initialized');
     }
@@ -75,7 +73,7 @@ export async function getJobStatus(jobId: string): Promise<{
     progress?: number;
     result?: unknown;
     failedReason?: string;
-    data?: any;
+    data?: unknown;
 } | null> {
     const queue = getQueue();
 

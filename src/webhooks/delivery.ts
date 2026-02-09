@@ -6,7 +6,7 @@ import { logger, createChildLogger } from '../logging.js';
 export interface WebhookPayload {
     jobId: string;
     status: 'completed' | 'failed';
-    result?: any;
+    result?: unknown;
     error?: string;
     timestamp: number;
 }
@@ -110,7 +110,7 @@ export async function notifyWebhookSuccess(
     webhookUrl: string,
     webhookSecret: string,
     jobId: string,
-    result: any
+    result: unknown
 ): Promise<void> {
     const payload: WebhookPayload = {
         jobId,

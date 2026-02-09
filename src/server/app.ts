@@ -347,8 +347,8 @@ app.get('/v1/reports/:jobId', async (req: Request, res: Response, next: NextFunc
 
       // Auto-cleanup: Once returned to the poller, we can clear the cache
       // because the backend is expected to save it to Supabase immediately.
-      const jobData = job.data as any;
-      if (jobData.input && jobData.input.userId && jobData.input.commitSha) {
+      const jobData = job.data as { input?: { userId?: string; commitSha?: string; template?: string } } | undefined;
+      if (jobData?.input?.userId && jobData.input.commitSha) {
         deleteReport(jobData.input.userId, jobData.input.commitSha, jobData.input.template).catch(err => {
           logger.error({ err, jobId }, 'Failed to auto-cleanup cache after polling');
         });

@@ -119,7 +119,7 @@ interface CallbackResult {
  */
 async function sendCallback(
   callback: WebhookCallback,
-  payload: any
+  payload: unknown
 ): Promise<CallbackResult> {
   const maxAttempts = callback.retry?.maxAttempts ?? 3;
   const backoffMs = callback.retry?.backoffMs ?? 1000;

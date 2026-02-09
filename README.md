@@ -1,6 +1,8 @@
 # Stepper: Production-Grade AI Inference Orchestrator
 
 [![CI Status](https://github.com/samuel-adedigba/ai-inference-stepper/actions/workflows/ci.yml/badge.svg)](https://github.com/samuel-adedigba/ai-inference-stepper/actions)
+[![npm version](https://img.shields.io/npm/v/ai-inference-stepper.svg)](https://www.npmjs.com/package/ai-inference-stepper)
+[![npm downloads](https://img.shields.io/npm/dm/ai-inference-stepper.svg)](https://www.npmjs.com/package/ai-inference-stepper)
 [![License: Custom](https://img.shields.io/badge/License-Attribution%20Required-blue.svg)](#license)
 [![DeepMind Tech](https://img.shields.io/badge/Built%20With-TypeScript%20%26%20Node.js-informational)](https://www.typescriptlang.org/)
 
@@ -9,7 +11,37 @@
 - Back to root: [../../README.md](../../README.md)
 - CommitDiary packages: [../api/README.md](../api/README.md) • [../web-dashboard/README.md](../web-dashboard/README.md) • [../extension/README.md](../extension/README.md) • [../core/README.md](../core/README.md)
 
-## ✅ Standalone Setup (Local)
+## npm Usage (Library or Service)
+
+Install:
+
+```bash
+npm i ai-inference-stepper
+```
+
+Library usage:
+
+```typescript
+import { enqueueReport, registerCallbacks, initStepper } from "ai-inference-stepper";
+
+initStepper({
+  config: {
+    redis: { url: "redis://localhost:6379" },
+  },
+});
+
+registerCallbacks({
+  onSuccess: (jobId, provider) => console.log(`Generated via ${provider}`),
+});
+```
+
+Service usage (CLI):
+
+```bash
+npx ai-inference-stepper
+```
+
+## Standalone Setup (Local)
 
 Stepper is open source and can run independently or inside this monorepo.
 
@@ -41,7 +73,7 @@ docker run -d -p 6379:6379 redis:alpine
 pnpm dev
 ```
 
-### ✅ Why This Setup Works
+### Why This Setup Works
 
 - Redis backs cache and queue state for resilient processing
 - Provider adapters allow fallback across multiple AI vendors
@@ -49,11 +81,48 @@ pnpm dev
 
 ---
 
-## 🏗️ Architecture First
+## Architecture
 
 Understanding how Stepper handles your requests is key to using its full power.
 
-![Stepper Architecture](./docs/assets/architecture.png)
+```mermaid
+flowchart TD
+    subgraph Client
+        Req[Request]
+    end
+
+    subgraph "Stepper Core"
+        CheckCache{Check Cache}
+        Redis[(Redis Cache)]
+        Queue[BullMQ Job Queue]
+        Worker[Worker Process]
+        
+        Req --> CheckCache
+        CheckCache -- Hit (Stale/Fresh) --> ReturnResults[Return Cached Result]
+        CheckCache -- Miss --> Queue
+    end
+
+    subgraph "Inference Engine"
+        Worker --> P1{Provider 1\nGemini}
+        
+        P1 -- Success --> Success[Finalize]
+        P1 -- Fail/RateLimit --> P2{Provider 2\nCohere}
+        
+        P2 -- Success --> Success
+        P2 -- Fail --> P3{Provider 3\nHF Space}
+        
+        P3 -- Success --> Success
+        P3 -- Fail --> DLQ[Dead Letter Queue]
+    end
+
+    subgraph "Completion"
+        Success --> CacheUpdate[Update Cache]
+        CacheUpdate --> Webhook[Execute Webhooks/Callbacks]
+    end
+
+    ReturnResults -.-> Client
+    Webhook -.-> Client
+```
 
 ### The Core Flow
 
@@ -71,7 +140,22 @@ Understanding how Stepper handles your requests is key to using its full power.
 
 ---
 
-## 🔗 CommitDiary Integration Flow
+## Real-World Use Case: CommitDiary
+
+Stepper powers **CommitDiary**, an automated commit message generation tool.
+
+**The Problem:** Developers often write vague commit messages like "fix bug" or "update code".
+**The Solution:** CommitDiary analyzes the git diff and uses Stepper to generate a professional, descriptive commit message.
+
+**How it works in production:**
+1.  **Input**: VS Code Extension sends the `git diff` to Stepper.
+2.  **Process**: Stepper uses the configured AI provider (e.g., Gemini) to analyze the code changes.
+3.  **Output**: Returns a summary, a detailed list of changes, and a short commit message title.
+4.  **Reliability**: If the primary AI provider is down, Stepper automatically falls back to secondary providers ensuring the user always gets a generated message.
+
+---
+
+## CommitDiary Integration Flow
 
 ```mermaid
 flowchart LR
@@ -91,20 +175,20 @@ See API docs for endpoints and callbacks: [../api/README.md](../api/README.md)
 
 ---
 
-## 🧩 Component Deep Dives
+## Component Deep Dives
 
 Stepper is modular. Explore each subsystem's technical documentation:
 
 | Component         | Purpose                          | Technical Details                           |
 | :---------------- | :------------------------------- | :------------------------------------------ |
-| **⚡ Cache**      | Intelligent Redis strategies     | [Cache Guide](./src/cache/README.md)        |
-| **🤖 Providers**  | Adapter logic for different LLMs | [Provider Specs](./src/providers/README.md) |
-| **📥 Queue**      | Background processing & retries  | [Queue System](./src/queue/README.md)       |
-| **📊 Metrics**    | Prometheus & Observability       | [Metrics Docs](./src/metrics/README.md)     |
-| **🛡️ Alerts**     | Discord & error notifications    | [Alerts System](./src/alerts/README.md)     |
-| **✅ Validation** | Zod-based strict output parsing  | [Validation](./src/validation/README.md)    |
+| **Cache**         | Intelligent Redis strategies     | [Cache Guide](./src/cache/README.md)        |
+| **Providers**     | Adapter logic for different LLMs | [Provider Specs](./src/providers/README.md) |
+| **Queue**         | Background processing & retries  | [Queue System](./src/queue/README.md)       |
+| **Metrics**       | Prometheus & Observability       | [Metrics Docs](./src/metrics/README.md)     |
+| **Alerts**        | Discord & error notifications    | [Alerts System](./src/alerts/README.md)     |
+| **Validation**    | Zod-based strict output parsing  | [Validation](./src/validation/README.md)    |
 
-### 🌟 Provider-Specific Optimizations
+### Provider-Specific Optimizations
 
 #### Google Gemini (Gemini 3 Models)
 
@@ -130,7 +214,7 @@ This pattern allows each provider to have unique optimizations while maintaining
 
 ---
 
-## ⚡ Quick Start (3 Minutes)
+## Quick Start (3 Minutes)
 
 ### 1. Install Dependencies
 
@@ -158,7 +242,7 @@ pnpm dev
 
 ---
 
-## 🧭 Monorepo Notes
+## Monorepo Notes
 
 - API expects Stepper at STEPPER_URL (default http://localhost:3005)
 - If running inside the monorepo, keep API and Stepper dev servers up
@@ -166,7 +250,7 @@ pnpm dev
 
 ---
 
-## 🛠️ Usage Modes
+## Usage Modes
 
 ### Mode A: As a Library (Direct Integration)
 
@@ -187,8 +271,8 @@ initStepper({
 
 // 1. Setup notification logic
 registerCallbacks({
-  onSuccess: (id, provider, data) => console.log(`✅ Success via ${provider}`),
-  onFailure: (id, errors) => console.error("❌ Failed:", errors),
+  onSuccess: (id, provider, data) => console.log(`Success via ${provider}`),
+  onFailure: (id, errors) => console.error("Failed:", errors),
 });
 
 // 2. Trigger a request (returns immediately if queued or cached)
@@ -208,6 +292,7 @@ Best for microservices or remote deployments (Render/Railway).
 curl -X POST http://localhost:3001/v1/reports \
   -H "Content-Type: application/json" \
   -d '{ "message": "Refactor API", "files": ["src/app.ts"] }'
+```
 
 #### CLI (npm)
 
@@ -232,13 +317,14 @@ If you install Stepper as a library, you can either:
 - Provide env variables in your host app process (recommended for deployments), or
 - Call `initStepper({ config, providers })` programmatically to override defaults.
 
+```
 # Response gives you a JobID to poll
 # { "status": "queued", "jobId": "...", "statusUrl": "..." }
 ```
 
 ---
 
-## 🤝 Contributing & Community
+## Contributing & Community
 
 We love contributors! Whether it's a bug report or a new provider adapter:
 
@@ -249,7 +335,7 @@ If contributing inside the CommitDiary monorepo, start at [../../README.md](../.
 
 ---
 
-## 📜 License
+## License
 
 **Custom Attribution License**
 

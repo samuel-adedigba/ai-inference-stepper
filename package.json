@@ -25,6 +25,14 @@
   "publishConfig": {
     "access": "public"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samuel-adedigba/ai-inference-stepper.git"
+  },
+  "bugs": {
+    "url": "https://github.com/samuel-adedigba/ai-inference-stepper/issues"
+  },
+  "homepage": "https://github.com/samuel-adedigba/ai-inference-stepper#readme",
   "scripts": {
     "build": "tsc",
     "dev": "tsx watch src/server/start.ts",

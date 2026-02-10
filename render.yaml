@@ -20,6 +20,10 @@ services:
         generateValue: true
       - key: API_KEY_HEADER
         value: "x-api-key"
+      - key: WEBHOOK_ENABLED
+        value: "true"
+      - key: WEBHOOK_SECRET
+        generateValue: true
       - key: CORS_ENABLED
         value: "true"
       - key: RATE_LIMIT_ENABLED

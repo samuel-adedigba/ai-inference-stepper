@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { generateReportNow, initializeProviders, registerCallbacks } from '../../src/stepper/orchestrator.js';
-import { PromptInput, StepperCallbacks } from '../../src/types.js';
+import { generateReportNow, generateRequestNow, initializeProviders, registerCallbacks } from '../../src/stepper/orchestrator.js';
+import { PromptInput, StepperCallbacks, StepperRequest } from '../../src/types.js';
 
 // Mock provider adapter
 const mockProviderCall = vi.fn();
@@ -61,6 +61,23 @@ describe('Orchestrator', () => {
         expect(mockProviderCall).toHaveBeenCalledTimes(1);
     });
 
+    it('should generate generic request output using provider chain', async () => {
+        const genericRequest: StepperRequest<{ text: string }, { summary: string }> = {
+            requestId: 'generic-orchestrator-test',
+            prompt: 'Summarize payload as JSON',
+            payload: { text: 'hello world' },
+            responseMode: 'json',
+        };
+
+        mockProviderCall.mockResolvedValueOnce({ summary: 'hello world summary' });
+
+        const result = await generateRequestNow(genericRequest, 'generic-job');
+
+        expect(result.usedProvider).toBe('hf-space');
+        expect(result.fallback).toBe(false);
+        expect(result.result).toEqual({ summary: 'hello world summary' });
+    });
+
     it('should invoke success callback', async () => {
         const onSuccess = vi.fn();
         const callbacks: StepperCallbacks = { onSuccess };
@@ -101,5 +118,18 @@ describe('Orchestrator', () => {
         expect(result.usedProvider).toBe('fallback');
         expect(result.result).toBeDefined();
         expect(result.result.title).toBeTruthy();
+    });
+
+    it('should fail fast when no usable provider config exists', () => {
+        expect(() =>
+            initializeProviders([
+                {
+                    name: 'openai',
+                    enabled: true,
+                    concurrency: 1,
+                    timeout: 5000,
+                },
+            ])
+        ).toThrow('No usable providers configured');
     });
 });

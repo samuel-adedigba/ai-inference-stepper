@@ -1,51 +1,36 @@
-# 🧠 Cache System
+# Cache System
 
-The **Inference Stepper** package is designed to generate AI-powered "commit diary" reports. Since generating these reports using AI services (like Gemini, Cohere, etc.) takes time and costs money, this module implements a **Redis-backed caching system**.
+Stepper cache is Redis-backed and request-centric.
 
-## 🎯 Purpose
+## Purpose
 
-1. **Remember** reports that were already generated
-2. **Return them instantly** when requested again
-3. **Track the progress** of reports being generated
-4. **Handle failures** gracefully
+- Reuse recent generation output
+- Track queued jobs (dehydrated state)
+- Return stale cached results while refreshing in background
+- Reduce provider cost and repeated traffic
 
-## 🔑 Key Concepts
+## Cache entry states
 
-### Dehydrated vs. Hydrated
+- `dehydrated`: job is queued/running, contains `jobId`
+- `hydrated`: completed result available (`result: unknown`)
+- `failed`: generation failed, includes error metadata
 
-- **Dehydrated entry**: A placeholder in the cache saying "We're working on this report, come back later!". It contains a `jobId` to track progress.
-- **Hydrated entry**: A completed report ready to be served. It contains the actual AI-generated content and metadata about which providers were tried.
+## Key building
 
-### Stale-While-Revalidate
+- Generic: `buildRequestCacheKey(request)`
+  - uses `request.cacheKey` when provided
+  - otherwise deterministic hash from request identity/prompt/payload/schema hints
+- Commit compatibility: preset helper in `presets/commit-report/cacheKey.ts`
 
-This system implements the **Stale-While-Revalidate** pattern:
+## Core APIs
 
-1. Serve old (stale) data immediately to the user.
-2. Trigger a background refresh to generate fresh data.
-3. The next request gets the updated, fresh data.
+- `getReportCache(key)`
+- `setDehydrated(key, jobId)`
+- `setHydrated(key, result, providersAttempted, fallback, ttl?)`
+- `markFailed(key, errorMessage, providersAttempted)`
+- `isHydratedFresh(entry)`
+- `isStaleButUsable(entry)`
 
-## 📋 Functions
+## Compatibility note
 
-| Function             | Purpose                                                                       |
-| -------------------- | ----------------------------------------------------------------------------- |
-| `getRedisClient()`   | Manages the connection to the Redis database.                                 |
-| `buildCacheKey()`    | Creates unique identifiers like `stepper:report:user123:shaabc`.              |
-| `getReportCache()`   | Retrieves a cached report if it exists.                                       |
-| `setDehydrated()`    | Marks a report as "in progress".                                              |
-| `setHydrated()`      | Stores a completed AI report.                                                 |
-| `markFailed()`       | Records logic failures so we don't keep retrying broken requests immediately. |
-| `isHydratedFresh()`  | Checks if a report is young enough to serve without refresh.                  |
-| `isStaleButUsable()` | Checks if we can serve an old report while refreshing.                        |
-
-## 🎯 Flow
-
-```mermaid
-graph TD
-    A[Request In] --> B{Check Cache}
-    B -- Hit (Fresh) --> C[Serve Immediately]
-    B -- Hit (Stale) --> D[Serve + Refresh Background]
-    B -- Miss --> E[Enqueue Job + Mark Dehydrated]
-    E --> F[AI Generation]
-    F -- Success --> G[Mark Hydrated]
-    F -- Failure --> H[Mark Failed]
-```
+Legacy commit cache identity remains supported through preset helpers during migration. Generic callers should prefer explicit `request.cacheKey` for stable cache semantics.

@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import { enqueueReport, generateReport, deleteReport, registerCallbacks } from '../../src/index.js';
+import {
+    enqueueReport,
+    enqueueRequest,
+    generateReport,
+    generateRequest,
+    deleteReport,
+    registerCallbacks
+} from '../../src/index.js';
 import { initializeProviders } from '../../src/stepper/orchestrator.js';
-import { PromptInput, StepperCallbacks } from '../../src/types.js';
+import { createCommitReportRequest } from '../../src/presets/commit-report/request.js';
+import { PromptInput, StepperCallbacks, StepperRequest } from '../../src/types.js';
 
 // Mock provider adapter for controlled testing
 const mockProviderCall = vi.fn();
@@ -38,12 +46,12 @@ vi.mock('../../src/cache/redisCache.js', async () => {
         }),
         isHydratedFresh: vi.fn(() => true),
         isStaleButUsable: vi.fn(() => false),
-        buildCacheKey: actual.buildCacheKey,
     };
 });
 
 // Mock queue operations
 vi.mock('../../src/queue/producer.js', () => ({
+    enqueueRequestJob: vi.fn(async () => 'mock-job-id'),
     enqueueReportJob: vi.fn(async () => 'mock-job-id'),
     getJobStatus: vi.fn(async () => null),
 }));
@@ -149,6 +157,62 @@ describe('Full Report Generation Flow', () => {
             if (result.status === 202) {
                 expect(result.jobId).toBeDefined();
                 expect(result.cached).toBe(false);
+            }
+        });
+    });
+
+    describe('Public API contract (generic + preset)', () => {
+        it('should support preset flow through generateRequest(...) contract', async () => {
+            mockProviderCall.mockResolvedValueOnce(mockReport);
+            const request = createCommitReportRequest(testInput);
+
+            const result = await generateRequest(request);
+
+            expect(result.result).toEqual(mockReport);
+            expect(result.usedProvider).toBe('hf-space');
+            expect(result.fallback).toBe(false);
+        });
+
+        it('should support preset flow through enqueueRequest(...) contract', async () => {
+            const request = createCommitReportRequest(testInput);
+            const result = await enqueueRequest(request);
+
+            expect(result.status).toBe(202);
+            if (result.status === 202) {
+                expect(result.jobId).toBe('mock-job-id');
+            }
+        });
+
+        it('should support non-preset generic generateRequest flow', async () => {
+            const genericRequest: StepperRequest<{ text: string }, { summary: string }> = {
+                requestId: 'generic-contract-test',
+                prompt: 'Summarize this text',
+                payload: { text: 'hello world' },
+                responseMode: 'json',
+            };
+
+            mockProviderCall.mockResolvedValueOnce({ summary: 'hello world summary' });
+            const result = await generateRequest(genericRequest);
+
+            expect(result.fallback).toBe(false);
+            expect(result.usedProvider).toBe('hf-space');
+            expect(result.result).toEqual({ summary: 'hello world summary' });
+        });
+
+        it('should support non-preset generic enqueueRequest flow', async () => {
+            const genericRequest: StepperRequest<{ text: string }, { summary: string }> = {
+                requestId: 'generic-queue-contract-test',
+                tenantId: 'tenant-123',
+                prompt: 'Summarize this text',
+                payload: { text: 'hello world' },
+                responseMode: 'json',
+            };
+
+            const result = await enqueueRequest(genericRequest);
+
+            expect(result.status).toBe(202);
+            if (result.status === 202) {
+                expect(result.jobId).toBe('mock-job-id');
             }
         });
     });

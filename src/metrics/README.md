@@ -1,24 +1,30 @@
-# 📊 Observability & Metrics
+# Observability & Metrics
 
-The **Inference Stepper** provides deep insight into its internal operations via **Prometheus** metrics.
+Stepper emits Prometheus metrics for inference reliability and cost-control visibility.
 
-## 🎯 Purpose
+## Goals
 
-- **Health Monitoring**: Track provider success rates and latencies.
-- **Capacity Planning**: Monitor job queue sizes and cache hit ratios.
-- **Alerting**: Provide the data source for the Discord alert system.
+- track provider success/failure and latency
+- monitor cache effectiveness
+- inspect queue/system pressure
+- support alerting and SLO dashboards
 
-## 🚀 Key Metrics Tracked
+## Core metric families
 
-| Metric                        | Type      | Description                                                       |
-| ----------------------------- | --------- | ----------------------------------------------------------------- |
-| `ai_requests_total`           | Counter   | Total requests per provider and status (success/fail).            |
-| `ai_request_duration_seconds` | Histogram | How long each provider takes to respond.                          |
-| `cache_hits_total`            | Counter   | Number of fresh and stale cache hits.                             |
-| `cache_misses_total`          | Counter   | Number of requests that weren't in the cache.                     |
-| `provider_failures_total`     | Counter   | Detailed breakdown of why providers failed (timeout, auth, etc.). |
-| `job_queue_size`              | Gauge     | How many jobs are waiting in the queue.                           |
+| Metric | Type | Purpose |
+|---|---|---|
+| `ai_requests_total` | Counter | provider request outcomes |
+| `ai_request_duration_seconds` | Histogram | provider latency distribution |
+| `cache_hits_total` | Counter | fresh/stale cache hit volume |
+| `cache_misses_total` | Counter | cache miss volume |
+| `provider_failures_total` | Counter | failure category tracking |
+| `job_queue_size` | Gauge | queued workload level |
 
-## 🛠️ Usage
+## Endpoint
 
-Metrics are exposed at the `/metrics` endpoint if the HTTP server is running. These can be scraped by a Prometheus server and visualized in **Grafana**.
+- exposed via `GET /metrics`
+- intended for Prometheus scrape + dashboarding
+
+## Compatibility note
+
+Metrics include low-cardinality `preset` and `response_mode` labels. Keep label dimensions bounded and avoid adding raw request metadata as labels.

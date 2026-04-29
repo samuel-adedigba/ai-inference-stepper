@@ -1,25 +1,38 @@
-# ✅ Validation & Schemas
+# Validation & Output Parsing
 
-AI models are non-deterministic; they can sometimes return malformed JSON or skip required fields. This module ensures that every report returned by the **Inference Stepper** follows a strict, predictable format.
+Stepper validation is mode-driven and preset-aware.
 
-## 🎯 Purpose
+## Goals
 
-- **Reliability**: Guarantees the API always returns data that matches the frontend's expectations.
-- **Data Integrity**: Uses **Zod** to validate types and string lengths.
-- **Fail-fast**: If an AI returns bad data, we catch it early and try a different provider.
+- parse provider output safely
+- provide actionable errors on malformed output
+- support generic callers with optional schema validation
+- preserve preset validation behavior for migration safety
 
-## 📋 The Report Schema
+## Parser modules
 
-Every report must contain:
+- `parseTextOutput(raw, schema?)`
+  - for text-mode responses
+  - applies optional schema validation/transformation on raw text
+- `parseJsonOutput(raw, schema?)`
+  - parses JSON
+  - applies optional schema validation
+- `parseZodOutput(value, zodSchema)`
+  - direct zod validation helper
+- `providerOutput` router
+  - chooses parser path by request mode/preset
 
-- `title`: A concise summary of the change.
-- `summary`: A detailed explanation.
-- `changes`: A list of specific file/logic modifications.
-- `rationale`: Why the change was made.
-- `impact_and_tests`: What was affected and how it was verified.
-- `next_steps`: Future tasks or related work.
-- `tags`: Keywords for categorization.
+## Routing behavior
 
-## 🛠️ Usage
+1. `preset: commit-report` -> commit-report schema validation
+2. generic `responseMode: text` -> text parser (+ optional schema)
+3. generic `responseMode: json` (or default) -> json parser (+ optional schema)
 
-This module is used by every provider adapter. After the AI returns a string, the adapter calls `parseAndValidateReport()` to transform that string into a validated object.
+## Compatibility note
+
+`validation/report.schema.ts` remains as compatibility shim for legacy imports.
+
+## Note
+
+- text-mode schema validation is now supported for generic requests.
+- if advanced schema behavior is needed (for example rich object validation), prefer `responseMode: "json"` and a JSON schema parser path.

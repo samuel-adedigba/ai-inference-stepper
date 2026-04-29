@@ -2,22 +2,28 @@
 
 import { Worker, Job } from 'bullmq';
 import { getRedisClient, setHydrated, markFailed, getReportCache } from '../cache/redisCache.js';
-import { generateReportNow } from '../stepper/orchestrator.js';
-import { ReportJobData } from '../types.js';
+import { generateRequestNow } from '../stepper/orchestrator.js';
+import { StepperCallbackPayload, StepperJobData } from '../types.js';
 import { config } from '../config.js';
 import { logger, createChildLogger } from '../logging.js';
 import { recordJobProcessed, recordJobFailed } from '../metrics/metrics.js';
 import { sendDiscordAlert } from '../alerts/discord.js';
 import { notifyWebhookSuccess, notifyWebhookFailure } from '../webhooks/delivery.js';
+import { deliverRequestCallbacks } from '../webhooks/requestCallbacks.js';
+import { toCommitReportInput } from '../presets/commit-report/request.js';
 
-let worker: Worker<ReportJobData> | null = null;
+let worker: Worker<StepperJobData<unknown, unknown>> | null = null;
 
 /**
  * Job processor function
  */
-async function processReportJob(job: Job<ReportJobData>): Promise<void> {
-    const { jobId, input, cacheKey } = job.data;
-    const log = createChildLogger({ jobId, userId: input.userId, commitSha: input.commitSha });
+async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Promise<void> {
+    const { jobId, request, cacheKey } = job.data;
+    const log = createChildLogger({
+        jobId,
+        requestId: request.requestId,
+        tenantId: request.tenantId,
+    });
 
     log.info('Processing report job');
 
@@ -29,8 +35,8 @@ async function processReportJob(job: Job<ReportJobData>): Promise<void> {
             return;
         }
 
-        // Generate report
-        const result = await generateReportNow(input, jobId);
+        // Generate request output with full generic request contract.
+        const result = await generateRequestNow(request, jobId);
 
         // Store in cache
         await setHydrated(cacheKey, result.result, result.providersAttempted, result.fallback);
@@ -61,37 +67,34 @@ async function processReportJob(job: Job<ReportJobData>): Promise<void> {
 
         recordJobFailed();
 
-        // Execute failure callbacks if configured
-        // Note: We handle this directly here since orchestrator threw before callbacks could execute
-        // The callbacks are fire-and-forget to not delay the job failure handling
-        if (input.callbacks && input.callbacks.length > 0) {
-            const failurePayload = {
+        // Execute failure callbacks if configured.
+        // Note: this is intentionally fire-and-forget so queue retry/failure handling is not delayed.
+        if (request.callbacks && request.callbacks.length > 0) {
+            const commitInput = toCommitReportInput(request);
+            const failurePayload: StepperCallbackPayload<unknown> = {
                 success: false,
                 error: errorMessage,
                 metadata: {
                     jobId,
-                    userId: input.userId,
-                    commitSha: input.commitSha,
-                    repo: input.repo,
+                    requestId: request.requestId,
+                    tenantId: request.tenantId,
+                    requestMetadata: request.metadata,
                     timestamp: new Date().toISOString(),
+                    userId: commitInput?.userId,
+                    commitSha: commitInput?.commitSha,
+                    repo: commitInput?.repo,
                 },
             };
 
-            for (const callback of input.callbacks) {
-                fetch(callback.url, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'User-Agent': 'Stepper/1.0',
-                        'X-Stepper-Timestamp': Date.now().toString(),
-                        ...callback.headers,
-                    },
-                    body: JSON.stringify(failurePayload),
-                    signal: AbortSignal.timeout(10000),
-                }).catch((err: Error) => {
-                    log.warn({ url: callback.url, error: err.message }, 'Failed to send failure callback');
+            void deliverRequestCallbacks(request.callbacks, failurePayload, { jobId })
+                .then((callbackResults) => {
+                    log.info({ callbackResults: callbackResults.map((r) => ({ url: r.url, success: r.success })) }, 'Failure callbacks executed');
+                })
+                .catch((err: unknown) => {
+                    log.warn({
+                        error: err instanceof Error ? err.message : String(err),
+                    }, 'Failed to execute failure callbacks');
                 });
-            }
         }
 
         // Send failure webhook notification if configured (legacy)
@@ -122,7 +125,7 @@ export function startWorker(): void {
 
     const connection = getRedisClient();
 
-    worker = new Worker<ReportJobData>(config.queue.name, processReportJob, {
+    worker = new Worker<StepperJobData<unknown, unknown>>(config.queue.name, processReportJob, {
         connection,
         concurrency: config.queue.concurrency, //(how many jobs it can do at once).
         removeOnComplete: { count: 100 },
@@ -140,7 +143,12 @@ export function startWorker(): void {
                 title: 'Job Failed Permanently',
                 message: `Job **${job.id}** failed after all retries.\n\n**Error:**\n\`${err.message}\``,
                 severity: 'warning',
-                metadata: { jobId: job.id, error: err.message, userId: job.data.input.userId }
+                metadata: {
+                    jobId: job.id,
+                    error: err.message,
+                    tenantId: job.data.request.tenantId || 'unknown',
+                    requestId: job.data.request.requestId,
+                }
             });
         }
     });

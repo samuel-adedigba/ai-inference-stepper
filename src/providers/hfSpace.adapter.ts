@@ -1,12 +1,12 @@
 import { ProviderErrorType } from '../types.js';
 import { ProviderAdapter, ProviderError, InvalidResponseError, TimeoutError, RateLimitError, AuthError, ProviderUnavailableError } from './provider.interface.js';
-import { PromptInput, ReportOutput } from '../types.js';
+import { StepperRequest } from '../types.js';
 import { safeRequest, isAuthError, isRateLimitError, RequestError } from '../utils/safeRequest.js';
-import { parseAndValidateReport } from '../validation/report.schema.js';
+import { parseProviderOutput } from '../validation/providerOutput.js';
 // import { redactSecrets } from '../utils/redaction.js';
 // import { config } from '../config.js';
 import { logger } from '../logging.js';
-import { buildComprehensivePrompt } from './promptBuilder.js';
+import { renderProviderPrompt } from '../prompt/renderPrompt.js';
 
 /**
  * Hugging Face Space adapter
@@ -30,9 +30,10 @@ export class HuggingFaceSpaceAdapter implements ProviderAdapter {
         }
     }
 
-    async call(input: PromptInput): Promise<ReportOutput> {
-      //  const prompt = this.buildPrompt(input);
-        const prompt = buildComprehensivePrompt(input);
+    async call(request: StepperRequest<unknown, unknown>): Promise<unknown> {
+        const prompt = renderProviderPrompt(request, {
+            providerName: this.name,
+        });
         const url = `${this.baseUrl}/api/infer`;
 
         const headers: Record<string, string> = {
@@ -56,14 +57,14 @@ export class HuggingFaceSpaceAdapter implements ProviderAdapter {
             if (!responseText) {
                 throw new InvalidResponseError('HF Space response missing report/output field');
             }
-            // Parse and validate
-            const validation = parseAndValidateReport(responseText);
+            // Parse and validate using runtime parser router.
+            const validation = parseProviderOutput(request, responseText);
             if (!validation.valid) {
                 logger.warn({ error: validation.error, response: responseText.slice(0, 200) }, 'HF Space returned invalid report');
                 throw new InvalidResponseError(`Validation failed: ${validation.error}`);
             }
 
-            return validation.result!;
+            return validation.result;
         } catch (error) {
             throw this.mapError(error);
         }

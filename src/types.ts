@@ -1,5 +1,7 @@
 // types.ts - Stepper Type Definitions
 
+import type { ZodType } from 'zod';
+
 /**
  * Generic webhook callback configuration
  * Stepper sends raw results to these URLs - callers handle transformation
@@ -19,7 +21,75 @@ export interface WebhookCallback {
 }
 
 /**
- * Input to generate a commit report
+ * Generic response mode for non-preset Stepper requests.
+ */
+export type StepperResponseMode = 'json' | 'text';
+
+/**
+ * Generic prompt builder input.
+ *
+ * Phase 1 note:
+ * - `preset` enables callers to identify a reusable package preset (for example `commit-report`).
+ * - core prompt rendering remains provider-specific for now and will be generalized in a later phase.
+ */
+export interface PromptBuilderInput<TPayload = unknown> {
+  preset?: string;
+  template?: string;
+  instructions?: string;
+  payload?: TPayload;
+  variables?: Record<string, unknown>;
+}
+
+/**
+ * Generic prompt contract accepted by Stepper.
+ */
+export type StepperPrompt<TPayload = unknown> =
+  | string
+  | PromptBuilderInput<TPayload>;
+
+/**
+ * Optional output schema contract for generic callers.
+ */
+export type StepperOutputSchema<TOutput = unknown> =
+  | {
+    kind: 'zod';
+    schema: ZodType<TOutput>;
+  }
+  | {
+    kind: 'custom';
+    parse: (value: unknown) => TOutput;
+  };
+
+/**
+ * Generic output parser signature used by runtime validation modules.
+ */
+export type OutputParser<TOutput = unknown> = (
+  rawOutput: string,
+  schema?: StepperOutputSchema<TOutput>
+) => {
+  valid: boolean;
+  result?: TOutput;
+  error?: string;
+};
+
+/**
+ * Generic request shape for Stepper orchestration.
+ */
+export interface StepperRequest<TPayload = unknown, TOutput = unknown> {
+  tenantId?: string;
+  requestId?: string;
+  cacheKey?: string;
+  prompt: StepperPrompt<TPayload>;
+  payload?: TPayload;
+  outputSchema?: StepperOutputSchema<TOutput>;
+  responseMode?: StepperResponseMode;
+  providers?: ProviderConfig[];
+  callbacks?: WebhookCallback[];
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Input to generate a commit report (legacy/public compatibility contract).
  */
 export interface PromptInput {
   userId: string;
@@ -30,7 +100,7 @@ export interface PromptInput {
   components: string[];
   diffSummary: string;
   template?: string;
-  
+
   /**
    * Multiple webhook callbacks for resilience
    * Stepper will call each in order, sending the raw result
@@ -38,6 +108,11 @@ export interface PromptInput {
    */
   callbacks?: WebhookCallback[];
 }
+
+/**
+ * Alias used by the new preset-based API.
+ */
+export type CommitReportInput = PromptInput;
 
 /**
  * Structured report output from AI providers
@@ -53,10 +128,15 @@ export interface ReportOutput {
 }
 
 /**
- * Provider attempt result
+ * Alias used by the new preset-based API.
  */
-export interface ProviderResult {
-  result: ReportOutput;
+export type CommitReportOutput = ReportOutput;
+
+/**
+ * Generic provider attempt result.
+ */
+export interface StepperProviderResult<TOutput = unknown> {
+  result: TOutput;
   usedProvider: string;
   providersAttempted: ProviderAttemptMeta[];
   fallback: boolean;
@@ -67,6 +147,11 @@ export interface ProviderResult {
 }
 
 /**
+ * Provider attempt result (legacy/public compatibility contract).
+ */
+export type ProviderResult = StepperProviderResult<ReportOutput>;
+
+/**
  * Metadata for each provider attempt
  */
 export interface ProviderAttemptMeta {
@@ -75,6 +160,11 @@ export interface ProviderAttemptMeta {
   error?: string;
   errorCode?: string;
   durationMs?: number;
+  /**
+   * Retry hint in seconds when provider responded with a rate limit signal.
+   * This is recorded for observability and for queue-level retry decisions.
+   */
+  retryAfterSeconds?: number;
   skipped?: string;
 }
 
@@ -83,7 +173,14 @@ export interface ProviderAttemptMeta {
  */
 export interface CacheEntry {
   status: 'hydrated' | 'dehydrated' | 'failed';
-  result?: ReportOutput;
+  /**
+   * Generic cached result payload.
+   *
+   * CommitDiary compatibility:
+   * - legacy report endpoints still read/write ReportOutput here.
+   * - generic requests can now persist non-report outputs without schema mismatch.
+   */
+  result?: unknown;
   jobId?: string;
   providersAttempted?: ProviderAttemptMeta[];
   timestamps: {
@@ -97,7 +194,18 @@ export interface CacheEntry {
 }
 
 /**
- * Job data for BullMQ
+ * Generic job data for queue payloads.
+ */
+export interface StepperJobData<TPayload = unknown, TOutput = unknown> {
+  jobId: string;
+  request: StepperRequest<TPayload, TOutput>;
+  cacheKey: string;
+  priority?: number;
+  callbackUrl?: string;
+}
+
+/**
+ * Job data for BullMQ (legacy/public compatibility contract).
  */
 export interface ReportJobData {
   jobId: string;
@@ -123,8 +231,8 @@ export enum ProviderErrorType {
  * Lifecycle callbacks for stepper events
  */
 export interface StepperCallbacks {
-  onEnqueue?: (jobId: string, meta: { input: PromptInput; cacheKey: string }) => void | Promise<void>;
-  onStart?: (jobId: string, input: PromptInput) => void | Promise<void>;
+  onEnqueue?: (jobId: string, meta: { input: PromptInput | StepperRequest<unknown, unknown>; cacheKey: string }) => void | Promise<void>;
+  onStart?: (jobId: string, input: PromptInput | StepperRequest<unknown, unknown>) => void | Promise<void>;
   onProviderAttempt?: (
     jobId: string,
     providerName: string,
@@ -134,12 +242,12 @@ export interface StepperCallbacks {
   onSuccess?: (
     jobId: string,
     providerName: string,
-    result: ReportOutput,
+    result: unknown,
     meta: { timings: { totalMs: number; providerMs?: number } }
   ) => void | Promise<void>;
   onFallback?: (
     jobId: string,
-    result: ReportOutput,
+    result: unknown,
     meta: { providersAttempted: ProviderAttemptMeta[] }
   ) => void | Promise<void>;
   onFailure?: (
@@ -147,6 +255,35 @@ export interface StepperCallbacks {
     errors: ProviderAttemptMeta[],
     meta: { lastError?: string }
   ) => void | Promise<void>;
+}
+
+/**
+ * Standard callback metadata shape sent to webhook callback consumers.
+ *
+ * CommitDiary compatibility:
+ * - commit fields remain optional and are included only for commit-report preset requests.
+ */
+export interface StepperCallbackMetadata {
+  jobId: string;
+  requestId?: string;
+  tenantId?: string;
+  provider?: string;
+  generationTimeMs?: number;
+  timestamp: string;
+  requestMetadata?: Record<string, unknown>;
+  userId?: string;
+  commitSha?: string;
+  repo?: string;
+}
+
+/**
+ * Standard callback payload contract for success/failure delivery.
+ */
+export interface StepperCallbackPayload<TOutput = unknown> {
+  success: boolean;
+  result?: TOutput;
+  error?: string;
+  metadata: StepperCallbackMetadata;
 }
 
 /**
@@ -164,6 +301,11 @@ export interface ProviderConfig {
   concurrency: number;
   timeout?: number;
 }
+
+/**
+ * Runtime provider config alias used by generic request contracts.
+ */
+export type ProviderRuntimeConfig = ProviderConfig;
 
 /**
  * Stepper configuration
@@ -198,6 +340,11 @@ export interface StepperConfig {
     baseDelayMs: number;
     maxJitterMs: number;
     rateLimitFallbackSeconds: number;
+    /**
+     * fallback: fail the current rate-limited provider immediately and continue
+     * to the next provider. wait: respect provider retry-after inline.
+     */
+    rateLimitStrategy: 'fallback' | 'wait';
   };
   circuit: {
     failureThreshold: number;

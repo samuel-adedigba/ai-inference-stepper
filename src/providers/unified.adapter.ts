@@ -1,8 +1,8 @@
 import { ProviderAdapter, ProviderError, InvalidResponseError, TimeoutError, RateLimitError, AuthError, ProviderUnavailableError } from './provider.interface.js';
-import { PromptInput, ReportOutput, ProviderErrorType } from '../types.js';
+import { ProviderErrorType, StepperRequest } from '../types.js';
 import { safeRequest, isAuthError, isRateLimitError, RequestError } from '../utils/safeRequest.js';
-import { parseAndValidateReport } from '../validation/report.schema.js';
-import { buildComprehensivePrompt, buildSimplePrompt, buildGeminiPrompt } from './promptBuilder.js';
+import { parseProviderOutput } from '../validation/providerOutput.js';
+import { renderProviderPrompt } from '../prompt/renderPrompt.js';
 import { logger } from '../logging.js';
 
 /**
@@ -50,22 +50,13 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
         }
     }
 
-    async call(input: PromptInput): Promise<ReportOutput> {
-        /**
-         * Build prompt based on provider-specific requirements
-         * 
-         * GEMINI-SPECIFIC: Uses XML-structured prompt with <role>, <instructions>, <constraints>, etc.
-         * Google Gemini 3 performs better with XML markup than traditional markdown prompts.
-         * Reference: https://ai.google.dev/gemini-api/docs/prompting-strategies#use-xml-tags
-         */
-        let prompt: string;
-        if (this.spec.name === 'gemini') {
-            prompt = buildGeminiPrompt(input);
-        } else if (this.spec.useSimplePrompt) {
-            prompt = buildSimplePrompt(input);
-        } else {
-            prompt = buildComprehensivePrompt(input);
-        }
+    async call(request: StepperRequest<unknown, unknown>): Promise<unknown> {
+        // Prompt rendering is centralized in prompt/renderPrompt to keep provider
+        // adapters focused on transport-level concerns only.
+        const prompt = renderProviderPrompt(request, {
+            providerName: this.spec.name,
+            useSimplePrompt: this.spec.useSimplePrompt,
+        });
 
         // Replace {model} placeholder in endpoint
         let actualEndpoint = this.spec.endpoint.replace('{model}', this.model || '');
@@ -123,8 +114,8 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
 
             // Parse and validate
             logger.info({ provider: this.name }, `🔍 [${this.name}] Validating AI response...`);
-            
-            const validation = parseAndValidateReport(responseText);
+
+            const validation = parseProviderOutput(request, responseText);
             if (!validation.valid) {
                 logger.warn({
                     provider: this.name,
@@ -145,10 +136,10 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
             logger.info({
                 provider: this.name,
                 totalTimeMs: Date.now() - startTime,
-                reportTitle: validation.result?.title?.slice(0, 80)
-            }, `✨ [${this.name}] Report generated successfully!`);
+                outputType: typeof validation.result,
+            }, `✨ [${this.name}] Generation completed successfully`);
 
-            return validation.result!;
+            return validation.result;
         } catch (error) {
             throw this.mapError(error);
         }

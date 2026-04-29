@@ -3,19 +3,20 @@
 import { Queue } from 'bullmq';
 import { v4 as uuidv4 } from 'uuid';
 import { getRedisClient } from '../cache/redisCache.js';
-import { PromptInput, ReportJobData } from '../types.js';
+import { PromptInput, StepperJobData, StepperRequest } from '../types.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
+import { createCommitReportRequest } from '../presets/commit-report/request.js';
 
-let queue: Queue<ReportJobData> | null = null;
+let queue: Queue<StepperJobData<unknown, unknown>> | null = null;
 
 /**
  * Get or create BullMQ queue
  */
-export function getQueue(): Queue<ReportJobData> {
+export function getQueue(): Queue<StepperJobData<unknown, unknown>> {
     if (!queue) {
         const connection = getRedisClient();
-        queue = new Queue<ReportJobData>(config.queue.name, { connection });
+        queue = new Queue<StepperJobData<unknown, unknown>>(config.queue.name, { connection });
 
         logger.info({ queueName: config.queue.name }, 'BullMQ queue initialized');
     }
@@ -24,27 +25,26 @@ export function getQueue(): Queue<ReportJobData> {
 }
 
 /**
- * Enqueue a report generation job
- * The "Order Taker"
+ * Enqueue a generic Stepper generation job.
  */
-export async function enqueueReportJob(
-    input: PromptInput,
+export async function enqueueRequestJob<TPayload = unknown, TOutput = unknown>(
+    request: StepperRequest<TPayload, TOutput>,
     cacheKey: string,
     options: { priority?: number; callbackUrl?: string } = {}
 ): Promise<string> {
     const jobId = uuidv4();
     const queue = getQueue();
 
-    const jobData: ReportJobData = {
+    const jobData: StepperJobData<TPayload, TOutput> = {
         jobId,
-        input,
+        request,
         cacheKey,
         priority: options.priority,
         callbackUrl: options.callbackUrl,
     };
 
     try {
-        await queue.add('generate-report', jobData, {
+        await queue.add('generate', jobData as StepperJobData<unknown, unknown>, {
             jobId,
             priority: options.priority,
             removeOnComplete: 100, // Keep last 100 completed jobs
@@ -56,12 +56,24 @@ export async function enqueueReportJob(
             },
         });
 
-        logger.info({ jobId, userId: input.userId, commitSha: input.commitSha }, 'Job enqueued');
+        logger.info({ jobId, cacheKey }, 'Job enqueued');
         return jobId;
     } catch (error) {
         logger.error({ error, jobId }, 'Failed to enqueue job');
         throw error;
     }
+}
+
+/**
+ * Legacy compatibility wrapper for CommitDiary report enqueue flow.
+ */
+export async function enqueueReportJob(
+    input: PromptInput,
+    cacheKey: string,
+    options: { priority?: number; callbackUrl?: string } = {}
+): Promise<string> {
+    const request = createCommitReportRequest(input);
+    return enqueueRequestJob(request, cacheKey, options);
 }
 
 /**

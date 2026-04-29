@@ -4,10 +4,13 @@ import express, { Request, Response, NextFunction, Application } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import { enqueueReport, generateReport, getJob, healthcheck, deleteReport, PromptInput } from '../index.js';
+import { enqueueReport, enqueueRequest, generateReport, generateRequest, getJob, healthcheck, deleteReport, PromptInput, StepperRequest } from '../index.js';
 import { getMetrics } from '../metrics/metrics.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
+import { handleCommitReportWebhook } from '../presets/commit-report/webhookEndpoint.js';
+import { toCommitReportInput } from '../presets/commit-report/request.js';
+import { parseHttpOutputSchemaInput, toRuntimeOutputSchemaFromHttp } from '../validation/httpOutputSchema.js';
 
 const app: Application = express();
 
@@ -120,9 +123,8 @@ const userRateLimiter = (req: Request, res: Response, next: NextFunction) => {
     return next();
   }
 
-  // Extract userId from body (for POST requests) or skip if not present
-  const userId = req.body?.userId;
-  if (!userId) {
+  const rateLimitKey = extractRateLimitKey(req);
+  if (!rateLimitKey) {
     return next();
   }
 
@@ -131,19 +133,19 @@ const userRateLimiter = (req: Request, res: Response, next: NextFunction) => {
   const maxPerUser = config.security.rateLimit.maxRequestsPerUser;
 
   // Get or create user entry
-  let userEntry = userRequestCounts.get(userId);
+  let userEntry = userRequestCounts.get(rateLimitKey);
   if (!userEntry || now > userEntry.resetTime) {
     userEntry = { count: 0, resetTime: now + windowMs };
-    userRequestCounts.set(userId, userEntry);
+    userRequestCounts.set(rateLimitKey, userEntry);
   }
 
   userEntry.count++;
 
   if (userEntry.count > maxPerUser) {
-    logger.warn({ userId, count: userEntry.count, path: req.path }, 'Rate limit exceeded (User)');
+    logger.warn({ rateLimitKey, count: userEntry.count, path: req.path }, 'Rate limit exceeded (User/Tenant)');
     return res.status(429).json({
       error: 'Too many requests',
-      message: 'You have exceeded the rate limit for your user. Please try again later.',
+      message: 'You have exceeded the request rate limit. Please try again later.',
       retryAfter: Math.ceil((userEntry.resetTime - now) / 1000),
     });
   }
@@ -220,7 +222,101 @@ function timingSafeEqual(a: string, b: string): boolean {
   return result === 0;
 }
 
-// Apply API key authentication to all routes
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function validateLegacyCommitInput(input: PromptInput): string | null {
+  if (!input.userId || !input.commitSha || !input.repo || !input.message) {
+    return 'Missing required fields: userId, commitSha, repo, message';
+  }
+  return null;
+}
+
+function validateGenericRequest(request: unknown): { valid: true; request: StepperRequest<unknown, unknown> } | { valid: false; error: string } {
+  if (!isRecord(request)) {
+    return { valid: false, error: 'Request body must be an object' };
+  }
+
+  if (!('prompt' in request)) {
+    return { valid: false, error: 'Missing required field: prompt' };
+  }
+
+  const prompt = request.prompt;
+  const promptIsValid =
+    typeof prompt === 'string' ||
+    (isRecord(prompt) && (prompt.preset === undefined || typeof prompt.preset === 'string'));
+  if (!promptIsValid) {
+    return { valid: false, error: 'Invalid prompt: expected string or preset prompt object' };
+  }
+
+  if (request.responseMode !== undefined && request.responseMode !== 'json' && request.responseMode !== 'text') {
+    return { valid: false, error: "Invalid responseMode: expected 'json' or 'text'" };
+  }
+
+  const normalizedRequest: StepperRequest<unknown, unknown> = {
+    ...(request as unknown as StepperRequest<unknown, unknown>),
+  };
+
+  if (request.outputSchema !== undefined) {
+    const parsedSchema = parseHttpOutputSchemaInput(request.outputSchema);
+    if (!parsedSchema.valid) {
+      return { valid: false, error: parsedSchema.error };
+    }
+
+    if (request.responseMode === 'text') {
+      return {
+        valid: false,
+        error: "outputSchema is only supported when responseMode is 'json'",
+      };
+    }
+
+    // Convert transport-safe DSL to runtime parser contract expected by generic pipeline.
+    normalizedRequest.outputSchema = toRuntimeOutputSchemaFromHttp(parsedSchema.schema);
+    normalizedRequest.responseMode = 'json';
+  }
+
+  if (request.providers !== undefined) {
+    if (!Array.isArray(request.providers)) {
+      return { valid: false, error: 'Invalid providers: expected array' };
+    }
+    for (const provider of request.providers) {
+      if (!isRecord(provider) || typeof provider.name !== 'string') {
+        return { valid: false, error: 'Invalid providers entry: each provider must include a string name' };
+      }
+    }
+  }
+
+  return { valid: true, request: normalizedRequest };
+}
+
+function extractRateLimitKey(req: Request): string | null {
+  // Keep legacy userId support, but prefer generic tenantId when present.
+  const tenantId = typeof req.body?.tenantId === 'string' ? req.body.tenantId : null;
+  if (tenantId) {
+    return `tenant:${tenantId}`;
+  }
+
+  const userId = typeof req.body?.userId === 'string' ? req.body.userId : null;
+  if (userId) {
+    return `user:${userId}`;
+  }
+
+  return null;
+}
+
+// API ROUTES
+
+/**
+ * POST /webhook/report-completion
+ * Webhook endpoint for report completion notifications
+ * This endpoint bypasses API key auth but uses webhook signature verification
+ */
+app.post('/webhook/report-completion', express.json({ limit: '10mb' }), async (req: Request, res: Response, next: NextFunction) => {
+  return handleCommitReportWebhook(req, res, next);
+});
+
+// Apply API key authentication to all other routes
 app.use(apiKeyAuth);
 
 if (config.security.apiKey.enabled) {
@@ -247,7 +343,137 @@ app.use((req, res, next) => {
   next();
 });
 
+async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: number; body: Record<string, unknown> }> {
+  const job = await getJob(jobId);
+  if (!job) {
+    return { statusCode: 404, body: { error: 'Job not found' } };
+  }
+
+  const response: Record<string, unknown> = {
+    id: job.id,
+    status: job.state,
+  };
+
+  if (job.progress !== undefined) {
+    response.progress = job.progress;
+  }
+
+  if (job.state === 'completed' && job.result) {
+    response.data = job.result;
+
+    // Compatibility auto-cleanup for commit-report polling:
+    // when the queue payload maps to commit preset data, keep existing delete-on-read behavior.
+    const jobData = job.data as { request?: StepperRequest<unknown, unknown>; input?: PromptInput } | undefined;
+    const requestInput = jobData?.request ? toCommitReportInput(jobData.request) : null;
+    const legacyInput = jobData?.input;
+    const cleanupInput = requestInput || legacyInput;
+
+    if (cleanupInput?.userId && cleanupInput.commitSha) {
+      deleteReport(cleanupInput.userId, cleanupInput.commitSha, cleanupInput.template).catch(err => {
+        logger.error({ err, jobId }, 'Failed to auto-cleanup cache after polling');
+      });
+    }
+  }
+
+  if (job.state === 'failed' && job.failedReason) {
+    response.error = job.failedReason;
+  }
+
+  return { statusCode: 200, body: response };
+}
+
 // API ROUTES
+
+/**
+ * POST /v1/generate
+ * Enqueue a generic generation request.
+ */
+app.post('/v1/generate', userRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const validation = validateGenericRequest(req.body);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const result = await enqueueRequest(validation.request);
+
+    if (result.status === 200) {
+      return res.status(200).json({
+        status: 'completed',
+        cached: true,
+        stale: result.stale,
+        data: result.data,
+      });
+    }
+
+    return res.status(202).json({
+      status: 'queued',
+      jobId: result.jobId,
+      statusUrl: `/v1/jobs/${result.jobId}`,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * POST /v1/generate/immediate
+ * Generate synchronously with the generic request contract.
+ */
+app.post('/v1/generate/immediate', userRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const validation = validateGenericRequest(req.body);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const result = await generateRequest(validation.request);
+
+    return res.status(200).json({
+      status: 'completed',
+      data: result.result,
+      metadata: {
+        provider: result.usedProvider,
+        fallback: result.fallback,
+        timings: result.timings,
+        providersAttempted: result.providersAttempted,
+      },
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * GET /v1/jobs/:jobId
+ * Generic job status endpoint.
+ */
+app.get('/v1/jobs/:jobId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { jobId } = req.params;
+    const response = await buildJobStatusResponse(jobId);
+    return res.status(response.statusCode).json(response.body);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * GET /v1/providers
+ * Expose configured provider health without credentials.
+ */
+app.get('/v1/providers', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const health = await healthcheck();
+    return res.status(200).json({
+      status: health.status,
+      providers: health.providers,
+      timestamp: health.timestamp,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 /**
  * POST /v1/reports
@@ -257,10 +483,10 @@ app.post('/v1/reports', userRateLimiter, async (req: Request, res: Response, nex
   try {
     const input: PromptInput = req.body;
 
-    // Validate required fields
-    if (!input.userId || !input.commitSha || !input.repo || !input.message) {
+    const validationError = validateLegacyCommitInput(input);
+    if (validationError) {
       return res.status(400).json({
-        error: 'Missing required fields: userId, commitSha, repo, message',
+        error: validationError,
       });
     }
 
@@ -293,9 +519,10 @@ app.post('/v1/reports/immediate', userRateLimiter, async (req: Request, res: Res
   try {
     const input: PromptInput = req.body;
 
-    if (!input.userId || !input.commitSha || !input.repo || !input.message) {
+    const validationError = validateLegacyCommitInput(input);
+    if (validationError) {
       return res.status(400).json({
-        error: 'Missing required fields: userId, commitSha, repo, message',
+        error: validationError,
       });
     }
 
@@ -323,39 +550,8 @@ app.post('/v1/reports/immediate', userRateLimiter, async (req: Request, res: Res
 app.get('/v1/reports/:jobId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const job = await getJob(jobId);
-
-    if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
-    }
-
-    const response: Record<string, unknown> = {
-      id: job.id,
-      status: job.state,
-    };
-
-    if (job.progress !== undefined) {
-      response.progress = job.progress;
-    }
-
-    if (job.state === 'completed' && job.result) {
-      response.data = job.result;
-
-      // Auto-cleanup: Once returned to the poller, we can clear the cache
-      // because the backend is expected to save it to Supabase immediately.
-      const jobData = job.data as { input?: { userId?: string; commitSha?: string; template?: string } } | undefined;
-      if (jobData?.input?.userId && jobData.input.commitSha) {
-        deleteReport(jobData.input.userId, jobData.input.commitSha, jobData.input.template).catch(err => {
-          logger.error({ err, jobId }, 'Failed to auto-cleanup cache after polling');
-        });
-      }
-    }
-
-    if (job.state === 'failed' && job.failedReason) {
-      response.error = job.failedReason;
-    }
-
-    return res.status(200).json(response);
+    const response = await buildJobStatusResponse(jobId);
+    return res.status(response.statusCode).json(response.body);
   } catch (error) {
     return next(error);
   }
@@ -421,9 +617,14 @@ app.get('/', (_req: Request, res: Response) => {
     service: 'stepper',
     version: '1.0.0',
     endpoints: {
+      'POST /v1/generate': 'Enqueue generic generation request',
+      'POST /v1/generate/immediate': 'Generate immediately (generic contract)',
+      'GET /v1/jobs/:jobId': 'Get generic job status',
+      'GET /v1/providers': 'Get provider health summary',
       'POST /v1/reports': 'Enqueue report generation',
       'POST /v1/reports/immediate': 'Generate report immediately',
       'GET /v1/reports/:jobId': 'Get job status',
+      'POST /webhook/report-completion': 'Webhook for report completion notifications',
       'GET /health': 'Health check',
       'GET /metrics': 'Prometheus metrics',
     },

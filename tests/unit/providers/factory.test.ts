@@ -2,43 +2,19 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createProviderAdapter } from '../../../src/providers/factory.js';
 import { ProviderConfig } from '../../../src/types.js';
 
-// Mock provider specs and adapters
-vi.mock('../../../src/providers/specs.js', () => ({
-    getProviderSpec: vi.fn((name: string) => {
-        if (name === 'gemini' || name === 'openai' || name === 'cohere') {
-            return {
-                name,
-                baseUrl: `https://api.${name}.com`,
-                endpoint: '/v1/generate',
-                buildHeaders: () => ({}),
-                buildBody: (prompt: string) => ({ prompt }),
-                parseResponse: (data: any) => data?.text || '',
-            };
+vi.mock('../../../src/providers/registry.js', () => ({
+    getProviderAdapter: vi.fn((config: ProviderConfig) => {
+        if (config.name === 'unknown-provider') {
+            return null;
         }
-        return undefined;
+
+        return {
+            name: config.name,
+            async call() {
+                return { title: 'Mock', summary: '', changes: [], rationale: '', impact_and_tests: '', next_steps: [], tags: '' };
+            },
+        };
     }),
-}));
-
-vi.mock('../../../src/providers/unified.adapter.js', () => ({
-    UnifiedProviderAdapter: class MockUnifiedAdapter {
-        name: string;
-        constructor(spec: any, options?: any) {
-            this.name = spec.name;
-        }
-        async call() {
-            return { title: 'Mock', summary: '', changes: [], rationale: '', impact_and_tests: '', next_steps: [], tags: '' };
-        }
-    },
-}));
-
-vi.mock('../../../src/providers/hfSpace.adapter.js', () => ({
-    HuggingFaceSpaceAdapter: class MockHFAdapter {
-        name = 'hf-space';
-        constructor(config: any) { }
-        async call() {
-            return { title: 'HF Mock', summary: '', changes: [], rationale: '', impact_and_tests: '', next_steps: [], tags: '' };
-        }
-    },
 }));
 
 describe('Provider Factory', () => {
@@ -47,7 +23,7 @@ describe('Provider Factory', () => {
     });
 
     describe('createProviderAdapter', () => {
-        it('should create HuggingFace Space adapter for hf-space provider', () => {
+        it('should create adapter for hf-space provider', () => {
             const config: ProviderConfig = {
                 name: 'hf-space',
                 enabled: true,

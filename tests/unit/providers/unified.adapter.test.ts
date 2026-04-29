@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { UnifiedProviderAdapter, ProviderSpec } from '../../../src/providers/unified.adapter.js';
 import { PromptInput } from '../../../src/types.js';
 import { InvalidResponseError } from '../../../src/providers/provider.interface.js';
+import { createCommitReportRequest } from '../../../src/presets/commit-report/request.js';
 
 // Mock dependencies
 vi.mock('../../../src/utils/safeRequest.js', () => ({
@@ -15,12 +16,12 @@ vi.mock('../../../src/utils/safeRequest.js', () => ({
     },
 }));
 
-vi.mock('../../../src/validation/report.schema.js', () => ({
-    parseAndValidateReport: vi.fn(),
+vi.mock('../../../src/validation/providerOutput.js', () => ({
+    parseProviderOutput: vi.fn(),
 }));
 
 import { safeRequest } from '../../../src/utils/safeRequest.js';
-import { parseAndValidateReport } from '../../../src/validation/report.schema.js';
+import { parseProviderOutput } from '../../../src/validation/providerOutput.js';
 
 describe('UnifiedProviderAdapter', () => {
     const mockSpec: ProviderSpec = {
@@ -48,6 +49,7 @@ describe('UnifiedProviderAdapter', () => {
         components: ['test'],
         diffSummary: '+ test',
     };
+    const testRequest = createCommitReportRequest(testInput);
 
     const validReport = {
         title: 'Test Report',
@@ -79,13 +81,13 @@ describe('UnifiedProviderAdapter', () => {
             headers: {},
         });
 
-        vi.mocked(parseAndValidateReport).mockReturnValueOnce({
+        vi.mocked(parseProviderOutput).mockReturnValueOnce({
             valid: true,
             result: validReport,
         });
 
         const adapter = new UnifiedProviderAdapter(mockSpec);
-        const result = await adapter.call(testInput);
+        const result = await adapter.call(testRequest);
 
         expect(result).toEqual(validReport);
         expect(safeRequest).toHaveBeenCalledWith(
@@ -108,7 +110,7 @@ describe('UnifiedProviderAdapter', () => {
 
         const adapter = new UnifiedProviderAdapter(mockSpec);
 
-        await expect(adapter.call(testInput)).rejects.toThrow(InvalidResponseError);
+        await expect(adapter.call(testRequest)).rejects.toThrow(InvalidResponseError);
     });
 
     it('should throw InvalidResponseError when validation fails', async () => {
@@ -118,14 +120,14 @@ describe('UnifiedProviderAdapter', () => {
             headers: {},
         });
 
-        vi.mocked(parseAndValidateReport).mockReturnValueOnce({
+        vi.mocked(parseProviderOutput).mockReturnValueOnce({
             valid: false,
             error: 'Invalid JSON structure',
         });
 
         const adapter = new UnifiedProviderAdapter(mockSpec);
 
-        await expect(adapter.call(testInput)).rejects.toThrow(InvalidResponseError);
+        await expect(adapter.call(testRequest)).rejects.toThrow(InvalidResponseError);
     });
 
     it('should use custom model when provided', async () => {
@@ -137,13 +139,13 @@ describe('UnifiedProviderAdapter', () => {
             headers: {},
         });
 
-        vi.mocked(parseAndValidateReport).mockReturnValueOnce({
+        vi.mocked(parseProviderOutput).mockReturnValueOnce({
             valid: true,
             result: validReport,
         });
 
         const adapter = new UnifiedProviderAdapter(mockSpec, { model: 'custom-model' });
-        await adapter.call(testInput);
+        await adapter.call(testRequest);
 
         expect(safeRequest).toHaveBeenCalledWith(
             expect.any(String),
@@ -164,13 +166,13 @@ describe('UnifiedProviderAdapter', () => {
             headers: {},
         });
 
-        vi.mocked(parseAndValidateReport).mockReturnValueOnce({
+        vi.mocked(parseProviderOutput).mockReturnValueOnce({
             valid: true,
             result: validReport,
         });
 
         const adapter = new UnifiedProviderAdapter(mockSpec, { baseUrl: 'https://custom.api.com' });
-        await adapter.call(testInput);
+        await adapter.call(testRequest);
 
         expect(safeRequest).toHaveBeenCalledWith(
             'https://custom.api.com/v1/generate',
@@ -192,13 +194,13 @@ describe('UnifiedProviderAdapter', () => {
             headers: {},
         });
 
-        vi.mocked(parseAndValidateReport).mockReturnValueOnce({
+        vi.mocked(parseProviderOutput).mockReturnValueOnce({
             valid: true,
             result: validReport,
         });
 
         const adapter = new UnifiedProviderAdapter(simpleSpec);
-        await adapter.call(testInput);
+        await adapter.call(testRequest);
 
         // Just verify the call was made (prompt content testing would require deeper mocking)
         expect(safeRequest).toHaveBeenCalled();

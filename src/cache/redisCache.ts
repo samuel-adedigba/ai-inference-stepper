@@ -1,7 +1,8 @@
 // packages/stepper/src/cache/redisCache.ts
 
 import Redis from 'ioredis';
-import { CacheEntry, ReportOutput, ProviderAttemptMeta } from '../types.js';
+import crypto from 'crypto';
+import { CacheEntry, ProviderAttemptMeta, StepperRequest } from '../types.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
 import { sendDiscordAlert } from '../alerts/discord.js';
@@ -37,11 +38,68 @@ export function getRedisClient(): Redis {
     return redisClient;
 }
 
+function stableStringify(value: unknown): string {
+    if (value === null || value === undefined) {
+        return String(value);
+    }
+
+    if (typeof value !== 'object') {
+        return JSON.stringify(value);
+    }
+
+    if (Array.isArray(value)) {
+        return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+    }
+
+    const sortedKeys = Object.keys(value as Record<string, unknown>).sort();
+    const objectValue = value as Record<string, unknown>;
+    const serialized = sortedKeys.map((key) => `"${key}":${stableStringify(objectValue[key])}`);
+    return `{${serialized.join(',')}}`;
+}
+
+function getOutputSchemaFingerprint(request: StepperRequest<unknown, unknown>): string {
+    if (!request.outputSchema) {
+        return 'none';
+    }
+
+    // We only include serializable identity hints, not full runtime schema internals.
+    if (request.outputSchema.kind === 'zod') {
+        return 'zod';
+    }
+
+    return 'custom';
+}
+
 /**
- * Build cache key for a report
+ * Build generic cache key for any Stepper request.
+ *
+ * Priority order:
+ * 1) request.cacheKey (consumer-controlled stable identity)
+ * 2) deterministic hash from request identity + prompt/payload fingerprint
  */
-export function buildCacheKey(userId: string, commitSha: string, templateHash: string = 'default'): string {
-    return `${config.redis.keyPrefix}report:${userId}:${commitSha}:${templateHash}`;
+export function buildRequestCacheKey<TPayload = unknown, TOutput = unknown>(
+    request: StepperRequest<TPayload, TOutput>
+): string {
+    if (request.cacheKey && request.cacheKey.trim().length > 0) {
+        return `${config.redis.keyPrefix}req:${request.cacheKey.trim()}`;
+    }
+
+    const fingerprintSource = {
+        tenantId: request.tenantId || 'public',
+        requestId: request.requestId || 'auto',
+        responseMode: request.responseMode || 'json',
+        prompt: request.prompt,
+        payload: request.payload,
+        outputSchema: getOutputSchemaFingerprint(request as StepperRequest<unknown, unknown>),
+    };
+
+    const hash = crypto
+        .createHash('sha256')
+        .update(stableStringify(fingerprintSource))
+        .digest('hex')
+        .slice(0, 24);
+
+    return `${config.redis.keyPrefix}req:${request.tenantId || 'public'}:${request.requestId || 'auto'}:${hash}`;
 }
 
 /**
@@ -92,7 +150,7 @@ export async function setDehydrated(key: string, jobId: string): Promise<void> {
  */
 export async function setHydrated(
     key: string,
-    result: ReportOutput,
+    result: unknown,
     providersAttempted: ProviderAttemptMeta[],
     fallback: boolean = false,
     ttl?: number // How long to keep it	604800 (7 days in seconds)

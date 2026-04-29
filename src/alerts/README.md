@@ -1,25 +1,24 @@
-# 🔔 Alerts & Notifications
+# Alerts & Notifications
 
-This module handles communicating critical system events to external channels, primarily **Discord**.
+This module emits operational alerts (currently Discord webhook).
 
-## 🎯 Purpose
+## Purpose
 
-- **Observability**: Know when the system is struggling in real-time.
-- **Incident Response**: Get notified immediately if all AI providers fail or if a circuit breaker opens.
+- Notify on provider instability
+- Notify on circuit breaker events
+- Improve incident visibility for inference orchestration
 
-## 🚀 Features
+## Current signals
 
-### Discord Integration
+- provider failure streak alerts
+- circuit breaker open alerts
+- transport errors for alert delivery itself
 
-Sends rich, formatted "embed" messages to a Discord webhook.
+## Configuration
 
-**What gets alerted?**
+Set `DISCORD_WEBHOOK_URL` to enable alert delivery.
+If unset, Stepper logs locally and skips external notifications.
 
-- **Circuit Breaker Open**: When a provider enters a failed state.
-- **Circuit Breaker Closed**: When a provider recovers.
-- **Job Failures**: When all providers fail and the system falls back to a template.
-- **System Errors**: Unexpected crashes or critical configuration issues.
+## Compatibility note
 
-## 🛠️ Configuration
-
-Set the `DISCORD_WEBHOOK_URL` in your `.env` to enable these alerts. If not set, the system will gracefully skip alerting and only log to the console.
+CommitDiary-specific wording/formatting should stay in CommitDiary integration layers. Core alert helpers should remain generic and reusable across use cases.

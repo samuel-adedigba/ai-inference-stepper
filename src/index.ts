@@ -1,22 +1,51 @@
 // packages/stepper/src/index.ts
 
-import { PromptInput, ReportOutput, ProviderResult, StepperCallbacks, StepperConfig, ProviderConfig } from './types.js';
+import {
+    PromptInput,
+    ReportOutput,
+    ProviderResult,
+    StepperCallbacks,
+    StepperConfig,
+    ProviderConfig,
+    StepperRequest,
+    StepperProviderResult,
+} from './types.js';
 import { logger } from './logging.js';
 import {
-    buildCacheKey,
     getReportCache,
+    buildRequestCacheKey,
     setDehydrated,
     isHydratedFresh,
     isStaleButUsable,
     deleteCacheEntry,
 } from './cache/redisCache.js';
-import { enqueueReportJob, getJobStatus } from './queue/producer.js';
-import { generateReportNow, registerCallbacks as registerOrchestratorCallbacks, initializeProviders, getProviderHealth } from './stepper/orchestrator.js';
+import { enqueueRequestJob, getJobStatus } from './queue/producer.js';
+import { generateReportNow, generateRequestNow, registerCallbacks as registerOrchestratorCallbacks, initializeProviders, getProviderHealth } from './stepper/orchestrator.js';
 import { recordCacheHit, recordCacheMiss } from './metrics/metrics.js';
-import crypto from 'crypto';
 import { applyConfigOverrides } from './config.js';
+import { createCommitReportRequest, toCommitReportInput } from './presets/commit-report/request.js';
+import { buildCommitReportCacheKey, buildCommitReportCacheKeyFromParts } from './presets/commit-report/cacheKey.js';
+import { LEGACY_COMMIT_REPORT_API_DEPRECATION } from './deprecations.js';
 
 let isInitialized = false;
+const emittedLegacyApiWarnings = new Set<string>();
+
+function warnLegacyApiOnce(apiName: string, replacement: string): void {
+    if (emittedLegacyApiWarnings.has(apiName)) {
+        return;
+    }
+
+    emittedLegacyApiWarnings.add(apiName);
+    logger.warn(
+        {
+            api: apiName,
+            replacement,
+            removalTarget: LEGACY_COMMIT_REPORT_API_DEPRECATION.removalTarget,
+            softDeprecationDate: LEGACY_COMMIT_REPORT_API_DEPRECATION.softDeprecationDate,
+        },
+        'Legacy CommitDiary API in use; migrate to generic request API'
+    );
+}
 
 function ensureInitialized(): void {
     if (!isInitialized) {
@@ -46,14 +75,6 @@ export function initStepper(options?: { config?: Partial<StepperConfig>; provide
 }
 
 /**
- * Compute template hash for cache key
- */
-function computeTemplateHash(template?: string): string {
-    const templateStr = template || 'default';
-    return crypto.createHash('sha256').update(templateStr).digest('hex').slice(0, 16);
-}
-
-/**
  * Register lifecycle callbacks
  * 
  * @example
@@ -69,6 +90,102 @@ function computeTemplateHash(template?: string): string {
 export function registerCallbacks(callbacks: StepperCallbacks): void {
     registerOrchestratorCallbacks(callbacks);
     logger.info('Callbacks registered');
+}
+
+type EnqueueResult<TOutput> =
+    | { status: 200; data: TOutput; cached: true; stale?: boolean }
+    | { status: 202; jobId: string; cached: false };
+
+function getRequestMetricsContext(request: StepperRequest<unknown, unknown>): { preset: 'commit-report' | 'generic'; responseMode: 'json' | 'text' } {
+    const commitInput = toCommitReportInput(request);
+    return {
+        preset: commitInput ? 'commit-report' : 'generic',
+        responseMode: request.responseMode === 'text' ? 'text' : 'json',
+    };
+}
+
+async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
+    request: StepperRequest<TPayload, TOutput>,
+    cacheKey: string,
+    context: { preset: 'commit-report' | 'generic'; responseMode: 'json' | 'text' },
+    logMeta: Record<string, unknown>
+): Promise<EnqueueResult<TOutput>> {
+    ensureInitialized();
+
+    const cached = await getReportCache(cacheKey);
+    if (cached && cached.status === 'hydrated' && cached.result !== undefined) {
+        const fresh = isHydratedFresh(cached);
+
+        if (fresh) {
+            recordCacheHit('fresh', context);
+            logger.info({ cacheKey, ...logMeta }, 'Cache hit (fresh), returning and clearing');
+
+            deleteCacheEntry(cacheKey).catch(err => {
+                logger.error({ err, cacheKey }, 'Failed to cleanup cache after fresh hit');
+            });
+
+            return { status: 200, data: cached.result as TOutput, cached: true };
+        }
+
+        if (isStaleButUsable(cached)) {
+            recordCacheHit('stale', context);
+            logger.info({ cacheKey, ...logMeta }, 'Cache hit (stale), scheduling refresh');
+
+            enqueueRequestJob(request, cacheKey, { priority: 10 }).catch((err) => {
+                logger.error({ err, cacheKey }, 'Failed to enqueue background refresh');
+            });
+
+            return { status: 200, data: cached.result as TOutput, cached: true, stale: true };
+        }
+    }
+
+    recordCacheMiss(context);
+    logger.info({ cacheKey, ...logMeta }, 'Cache miss, enqueueing job');
+
+    const jobId = await enqueueRequestJob(request, cacheKey);
+    await setDehydrated(cacheKey, jobId);
+
+    return { status: 202, jobId, cached: false };
+}
+
+/**
+ * Internal legacy enqueue path kept stable during the generic migration.
+ */
+async function enqueueCommitReportInternal(input: PromptInput): Promise<EnqueueResult<ReportOutput>> {
+    const request = createCommitReportRequest(input);
+    const cacheKey = buildCommitReportCacheKey(input);
+    const context = getRequestMetricsContext(request);
+    return enqueueRequestInternal(request, cacheKey, context, {
+        userId: input.userId,
+        commitSha: input.commitSha,
+        requestId: request.requestId,
+    });
+}
+
+/**
+ * Enqueue a generic Stepper request.
+ */
+export async function enqueueRequest<TPayload = unknown, TOutput = unknown>(
+    request: StepperRequest<TPayload, TOutput>
+): Promise<EnqueueResult<TOutput>>;
+export async function enqueueRequest(input: PromptInput): Promise<EnqueueResult<ReportOutput>>;
+export async function enqueueRequest<TPayload = unknown, TOutput = unknown>(
+    requestOrInput: StepperRequest<TPayload, TOutput> | PromptInput
+): Promise<EnqueueResult<TOutput | ReportOutput>> {
+    if ('userId' in requestOrInput && 'commitSha' in requestOrInput) {
+        // Compatibility branch for callers still passing PromptInput directly.
+        warnLegacyApiOnce('enqueueRequest(PromptInput)', 'enqueueRequest(createCommitReportRequest(input))');
+        return enqueueCommitReportInternal(requestOrInput);
+    }
+
+    const request = requestOrInput as StepperRequest<TPayload, TOutput>;
+    const context = getRequestMetricsContext(request);
+    const cacheKey = buildRequestCacheKey(request);
+
+    return enqueueRequestInternal(request, cacheKey, context, {
+        requestId: request.requestId,
+        tenantId: request.tenantId,
+    });
 }
 
 /**
@@ -97,59 +214,44 @@ export function registerCallbacks(callbacks: StepperCallbacks): void {
  *   // handle enqueued result
  * }
  */
+/**
+ * @deprecated Use `enqueueRequest(createCommitReportRequest(input))`.
+ * Planned removal target: v2.0.0.
+ */
 export async function enqueueReport(
     input: PromptInput
-): Promise<
-    | { status: 200; data: ReportOutput; cached: true; stale?: boolean }
-    | { status: 202; jobId: string; cached: false }
-> {
-    ensureInitialized();
-    const templateHash = computeTemplateHash(input.template);
-    const cacheKey = buildCacheKey(input.userId, input.commitSha, templateHash);
+): Promise<EnqueueResult<ReportOutput>> {
+    // Compatibility wrapper to preserve the existing CommitDiary contract.
+    warnLegacyApiOnce(
+        'enqueueReport',
+        LEGACY_COMMIT_REPORT_API_DEPRECATION.replacementApis.enqueueReport
+    );
+    return enqueueCommitReportInternal(input);
+}
 
-    // Check cache
-    const cached = await getReportCache(cacheKey);
-
-    if (cached && cached.status === 'hydrated' && cached.result) {
-        const fresh = isHydratedFresh(cached);
-
-        if (fresh) {
-            // Fresh cache hit - return immediately and cleanup
-            recordCacheHit('fresh');
-            logger.info({ cacheKey, userId: input.userId }, 'Cache hit (fresh), returning and clearing');
-
-            // We clear immediately because caller is expected to save this
-            deleteCacheEntry(cacheKey).catch(err => {
-                logger.error({ err, cacheKey }, 'Failed to cleanup cache after fresh hit');
-            });
-
-            return { status: 200, data: cached.result, cached: true };
-        }
-
-        // Stale but usable - return and schedule background refresh
-        if (isStaleButUsable(cached)) {
-            recordCacheHit('stale');
-            logger.info({ cacheKey, userId: input.userId }, 'Cache hit (stale), scheduling refresh');
-
-            // Schedule low-priority background refresh
-            enqueueReportJob(input, cacheKey, { priority: 10 }).catch((err) => {
-                logger.error({ err, cacheKey }, 'Failed to enqueue background refresh');
-            });
-
-            return { status: 200, data: cached.result, cached: true, stale: true };
-        }
+/**
+ * Generate immediately from a generic Stepper request.
+ */
+export async function generateRequest<TPayload = unknown, TOutput = unknown>(
+    request: StepperRequest<TPayload, TOutput>
+): Promise<StepperProviderResult<TOutput>>;
+export async function generateRequest(input: PromptInput): Promise<ProviderResult>;
+export async function generateRequest<TPayload = unknown, TOutput = unknown>(
+    requestOrInput: StepperRequest<TPayload, TOutput> | PromptInput
+): Promise<StepperProviderResult<TOutput | ReportOutput>> {
+    if ('userId' in requestOrInput && 'commitSha' in requestOrInput) {
+        // Compatibility branch for callers still passing PromptInput directly.
+        warnLegacyApiOnce('generateRequest(PromptInput)', 'generateRequest(createCommitReportRequest(input))');
+        ensureInitialized();
+        const jobId = `sync_${Date.now()}`;
+        return generateReportNow(requestOrInput, jobId);
     }
 
-    // Cache miss or dehydrated - enqueue job
-    recordCacheMiss();
-    logger.info({ cacheKey, userId: input.userId }, 'Cache miss, enqueueing job');
-
-    const jobId = await enqueueReportJob(input, cacheKey);
-
-    // Create dehydrated placeholder
-    await setDehydrated(cacheKey, jobId);
-
-    return { status: 202, jobId, cached: false };
+    ensureInitialized();
+    const request = requestOrInput as StepperRequest<TPayload, TOutput>;
+    const jobId = request.requestId ? `sync_${request.requestId}` : `sync_${Date.now()}`;
+    const result = await generateRequestNow<TOutput>(request, jobId);
+    return result as StepperProviderResult<TOutput>;
 }
 
 /**
@@ -174,10 +276,18 @@ export async function enqueueReport(
  * 
  * // handle provider and report result
  */
+/**
+ * @deprecated Use `generateRequest(createCommitReportRequest(input))`.
+ * Planned removal target: v2.0.0.
+ */
 export async function generateReport(input: PromptInput): Promise<ProviderResult> {
-    ensureInitialized();
-    const jobId = `sync_${Date.now()}`;
-    return generateReportNow(input, jobId);
+    // Compatibility wrapper to preserve the existing CommitDiary contract.
+    warnLegacyApiOnce(
+        'generateReport',
+        LEGACY_COMMIT_REPORT_API_DEPRECATION.replacementApis.generateReport
+    );
+    const request = createCommitReportRequest(input);
+    return generateRequest<PromptInput, ReportOutput>(request);
 }
 
 /**
@@ -207,9 +317,16 @@ export async function getJob(jobId: string): Promise<{
  * @param commitSha - Commit SHA
  * @param template - Template name (optional)
  */
+/**
+ * @deprecated Use preset cache helpers and generic cache lifecycle APIs.
+ * Planned removal target: v2.0.0.
+ */
 export async function deleteReport(userId: string, commitSha: string, template?: string): Promise<void> {
-    const templateHash = computeTemplateHash(template);
-    const cacheKey = buildCacheKey(userId, commitSha, templateHash);
+    warnLegacyApiOnce(
+        'deleteReport',
+        LEGACY_COMMIT_REPORT_API_DEPRECATION.replacementApis.deleteReport
+    );
+    const cacheKey = buildCommitReportCacheKeyFromParts(userId, commitSha, template);
     await deleteCacheEntry(cacheKey);
 }
 
@@ -243,4 +360,7 @@ export async function healthcheck(): Promise<{
 
 // Re-export types for consumers
 export * from './types.js';
+export * from './presets/commit-report/index.js';
+export * from './presets/commit-report/request.js';
+export * from './deprecations.js';
 export { config } from './config.js';

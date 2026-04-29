@@ -2,12 +2,12 @@ import { ProviderErrorType } from '../types.js';
 // packages/stepper/src/providers/httpTemplate.adapter.ts
 
 import { ProviderAdapter, ProviderError, InvalidResponseError, TimeoutError, RateLimitError, AuthError, ProviderUnavailableError } from './provider.interface.js';
-import { PromptInput, ReportOutput } from '../types.js';
+import { StepperRequest } from '../types.js';
 import { safeRequest, isAuthError, isRateLimitError, RequestError } from '../utils/safeRequest.js';
-import { parseAndValidateReport } from '../validation/report.schema.js';
+import { parseProviderOutput } from '../validation/providerOutput.js';
 // import { redactSecrets } from '../utils/redaction.js';
 import { logger } from '../logging.js';
-import { buildComprehensivePrompt, buildSimplePrompt } from './promptBuilder.js';
+import { renderProviderPrompt } from '../prompt/renderPrompt.js';
 
 /**
  * Generic HTTP provider adapter template
@@ -61,10 +61,11 @@ export class HttpTemplateAdapter implements ProviderAdapter {
         }
     }
 
-    async call(input: PromptInput): Promise<ReportOutput> {
-        const prompt = this.useSimplePrompt
-            ? buildSimplePrompt(input)
-            : buildComprehensivePrompt(input);
+    async call(request: StepperRequest<unknown, unknown>): Promise<unknown> {
+        const prompt = renderProviderPrompt(request, {
+            providerName: this.name,
+            useSimplePrompt: this.useSimplePrompt,
+        });
         const { endpoint, headers, body } = this.buildRequest(prompt, this.apiKey);
         const url = `${this.baseUrl}${endpoint}`;
 
@@ -81,15 +82,15 @@ export class HttpTemplateAdapter implements ProviderAdapter {
                 throw new InvalidResponseError('Provider response missing expected content');
             }
 
-            // Parse and validate
-            const validation = parseAndValidateReport(responseText);
+            // Parse and validate using runtime parser router.
+            const validation = parseProviderOutput(request, responseText);
             if (!validation.valid) {
                 logger.warn({
                     provider: this.name, error: validation.error, responsePreview: responseText.slice(0, 200)
                 }, 'Provider returned invalid report');
                 throw new InvalidResponseError(`Validation failed: ${validation.error}`);
             }
-            return validation.result!;
+            return validation.result;
         } catch (error) {
             throw this.mapError(error);
         }

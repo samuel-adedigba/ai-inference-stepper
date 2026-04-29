@@ -1,4 +1,4 @@
-import { PromptInput, ReportOutput, ProviderErrorType } from '../types.js';
+import { ProviderErrorType, StepperRequest } from '../types.js';
 
 /**
  * Base provider error class
@@ -64,7 +64,7 @@ export interface ProviderAdapter {
    * Call the provider to generate a report
    * @throws ProviderError on failure
    */
-  call(input: PromptInput): Promise<ReportOutput>;
+  call(request: StepperRequest<unknown, unknown>): Promise<unknown>;
 
   /**
    * Optional health check

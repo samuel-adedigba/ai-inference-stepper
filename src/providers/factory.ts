@@ -1,8 +1,6 @@
 import { ProviderConfig } from '../types.js';
 import { ProviderAdapter } from './provider.interface.js';
-import { HuggingFaceSpaceAdapter } from './hfSpace.adapter.js';
-import { UnifiedProviderAdapter } from './unified.adapter.js';
-import { getProviderSpec } from './specs.js';
+import { getProviderAdapter } from './registry.js';
 import { logger } from '../logging.js';
 
 /**
@@ -15,32 +13,13 @@ export function createProviderAdapter(config: ProviderConfig): ProviderAdapter |
     }
 
     try {
-        // Special case: HuggingFace Space (custom adapter)
-        if (config.name === 'hf-space') {
-            if (!config.baseUrl) {
-                logger.error('HuggingFace Space requires baseUrl');
-                return null;
-            }
-            return new HuggingFaceSpaceAdapter({
-                baseUrl: config.baseUrl,
-                apiKeyEnvVar: config.apiKeyEnvVar || 'HF_SPACE_API_KEY',
-                timeout: config.timeout,
-            });
-        }
-
-        // All other providers use unified adapter
-        const spec = getProviderSpec(config.name);
-        if (!spec) {
+        const adapter = getProviderAdapter(config);
+        if (!adapter) {
             logger.error({ provider: config.name }, 'Unknown provider type');
             return null;
         }
 
-        return new UnifiedProviderAdapter(spec, {
-            apiKey: config.apiKey,
-            model: config.modelName,
-            timeout: config.timeout,
-            baseUrl: config.baseUrl,
-        });
+        return adapter;
     } catch (error) {
         logger.error({ provider: config.name, error }, 'Failed to create provider adapter');
         return null;

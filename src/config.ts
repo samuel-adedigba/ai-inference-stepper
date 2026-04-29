@@ -144,6 +144,9 @@ export function loadConfig(): StepperConfig {
       // Rate Limit Fallback: If AI says "Busy" but doesn't say for how long, wait ~2 hours (extreme safety).
       // Note: User set this to 5400 in .env which is ~90mins.
       rateLimitFallbackSeconds: parseInt(process.env.RETRY_RATE_LIMIT_FALLBACK || '7200', 10),
+      // fallback (default): do not block provider chain on a single provider rate limit.
+      // wait: preserve legacy inline wait behavior on rate limits.
+      rateLimitStrategy: process.env.RETRY_RATE_LIMIT_STRATEGY === 'wait' ? 'wait' : 'fallback',
     },
     circuit: {
       // Failure Threshold: Kill the provider if 5 requests in a row fail.

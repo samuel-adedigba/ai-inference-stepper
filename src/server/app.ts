@@ -5,6 +5,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { enqueueReport, enqueueRequest, generateReport, generateRequest, getJob, healthcheck, deleteReport, PromptInput, StepperRequest } from '../index.js';
+import { getReportCache } from '../cache/redisCache.js';
 import { getMetrics } from '../metrics/metrics.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
@@ -358,12 +359,23 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
     response.progress = job.progress;
   }
 
-  if (job.state === 'completed' && job.result) {
-    response.data = job.result;
+  const jobData = job.data as { request?: StepperRequest<unknown, unknown>; input?: PromptInput; cacheKey?: string } | undefined;
+  const cached = job.state === 'completed' && !job.result && jobData?.cacheKey
+    ? await getReportCache(jobData.cacheKey)
+    : null;
+  const completedResult = job.result || (cached?.status === 'hydrated' ? {
+    result: cached.result,
+    usedProvider: 'cache',
+    providersAttempted: cached.providersAttempted || [],
+    fallback: cached.fallback || false,
+    timings: { totalMs: 0 },
+  } : null);
+
+  if (job.state === 'completed' && completedResult) {
+    response.data = completedResult;
 
     // Compatibility auto-cleanup for commit-report polling:
     // when the queue payload maps to commit preset data, keep existing delete-on-read behavior.
-    const jobData = job.data as { request?: StepperRequest<unknown, unknown>; input?: PromptInput } | undefined;
     const requestInput = jobData?.request ? toCommitReportInput(jobData.request) : null;
     const legacyInput = jobData?.input;
     const cleanupInput = requestInput || legacyInput;

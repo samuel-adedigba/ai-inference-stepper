@@ -100,6 +100,7 @@ export interface PromptInput {
   components: string[];
   diffSummary: string;
   template?: string;
+  callbackUrl?: string;
 
   /**
    * Multiple webhook callbacks for resilience

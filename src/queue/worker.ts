@@ -3,7 +3,7 @@
 import { Worker, Job } from 'bullmq';
 import { getRedisClient, setHydrated, markFailed, getReportCache } from '../cache/redisCache.js';
 import { generateRequestNow } from '../stepper/orchestrator.js';
-import { StepperCallbackPayload, StepperJobData } from '../types.js';
+import { StepperCallbackPayload, StepperJobData, StepperProviderResult } from '../types.js';
 import { config } from '../config.js';
 import { logger, createChildLogger } from '../logging.js';
 import { recordJobProcessed, recordJobFailed } from '../metrics/metrics.js';
@@ -17,7 +17,7 @@ let worker: Worker<StepperJobData<unknown, unknown>> | null = null;
 /**
  * Job processor function
  */
-async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Promise<void> {
+async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Promise<StepperProviderResult<unknown>> {
     const { jobId, request, cacheKey } = job.data;
     const log = createChildLogger({
         jobId,
@@ -32,7 +32,13 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
         const cached = await getReportCache(cacheKey);
         if (cached && cached.status === 'hydrated') {
             log.info('Report already hydrated in cache, skipping generation');
-            return;
+            return {
+                result: cached.result,
+                usedProvider: 'cache',
+                providersAttempted: cached.providersAttempted || [],
+                fallback: cached.fallback || false,
+                timings: { totalMs: 0 },
+            };
         }
 
         // Generate request output with full generic request contract.
@@ -58,6 +64,8 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
                 result.result
             );
         }
+
+        return result;
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         log.error({ error: errorMessage }, 'Job failed');

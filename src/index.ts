@@ -96,6 +96,11 @@ type EnqueueResult<TOutput> =
     | { status: 200; data: TOutput; cached: true; stale?: boolean }
     | { status: 202; jobId: string; cached: false };
 
+type EnqueueOptions = {
+    priority?: number;
+    callbackUrl?: string;
+};
+
 function getRequestMetricsContext(request: StepperRequest<unknown, unknown>): { preset: 'commit-report' | 'generic'; responseMode: 'json' | 'text' } {
     const commitInput = toCommitReportInput(request);
     return {
@@ -108,7 +113,8 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
     request: StepperRequest<TPayload, TOutput>,
     cacheKey: string,
     context: { preset: 'commit-report' | 'generic'; responseMode: 'json' | 'text' },
-    logMeta: Record<string, unknown>
+    logMeta: Record<string, unknown>,
+    options: EnqueueOptions = {}
 ): Promise<EnqueueResult<TOutput>> {
     ensureInitialized();
 
@@ -131,7 +137,7 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
             recordCacheHit('stale', context);
             logger.info({ cacheKey, ...logMeta }, 'Cache hit (stale), scheduling refresh');
 
-            enqueueRequestJob(request, cacheKey, { priority: 10 }).catch((err) => {
+            enqueueRequestJob(request, cacheKey, { ...options, priority: 10 }).catch((err) => {
                 logger.error({ err, cacheKey }, 'Failed to enqueue background refresh');
             });
 
@@ -142,7 +148,7 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
     recordCacheMiss(context);
     logger.info({ cacheKey, ...logMeta }, 'Cache miss, enqueueing job');
 
-    const jobId = await enqueueRequestJob(request, cacheKey);
+    const jobId = await enqueueRequestJob(request, cacheKey, options);
     await setDehydrated(cacheKey, jobId);
 
     return { status: 202, jobId, cached: false };
@@ -159,6 +165,8 @@ async function enqueueCommitReportInternal(input: PromptInput): Promise<EnqueueR
         userId: input.userId,
         commitSha: input.commitSha,
         requestId: request.requestId,
+    }, {
+        callbackUrl: input.callbackUrl,
     });
 }
 

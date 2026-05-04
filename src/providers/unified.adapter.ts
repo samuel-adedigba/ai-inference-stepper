@@ -5,6 +5,10 @@ import { parseProviderOutput } from '../validation/providerOutput.js';
 import { renderProviderPrompt } from '../prompt/renderPrompt.js';
 import { logger } from '../logging.js';
 
+function redactUrl(value: string): string {
+    return value.replace(/([?&](?:key|api_key|token)=)[^&]+/gi, '$1[REDACTED]');
+}
+
 /**
  * Provider-specific configuration
  */
@@ -79,7 +83,7 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
         logger.info({
             provider: this.name,
             model: this.model,
-            endpoint: actualEndpoint,
+            endpoint: redactUrl(actualEndpoint),
             promptLength: prompt.length,
             timestamp: new Date().toISOString()
         }, `🤖 [${this.name}] Starting AI processing...`);

@@ -1,14 +1,20 @@
 {
   "name": "ai-inference-stepper",
-  "version": "1.0.1",
-  "description": "Resilient AI inference orchestrator for Node.js that provides queued execution, Redis-backed caching, provider failover, and callback/webhook delivery for production report-generation pipelines.",
+  "version": "1.0.2",
+  "description": "Resilient AI inference orchestrator for Node.js that provides queued execution, Redis-backed caching, provider failover, and callback/webhook delivery for generation pipelines.",
   "keywords": [
     "ai",
     "inference",
     "stepper",
     "llm",
     "orchestration",
-    "commitdiary"
+    "commitdiary",
+    "nodejs",
+    "typescript",
+    "redis",
+    "express",
+    "webhooks",
+    "callbacks"
   ],
   "author": "Samuel Adedigba",
   "license": "MIT",

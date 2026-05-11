@@ -1,0 +1,5 @@
+# Keep package output minimal and publish only runtime artifacts/docs.
+*
+!dist/**
+!README.md
+!LICENSE

@@ -1,7 +1,17 @@
 {
   "name": "ai-inference-stepper",
   "version": "1.0.1",
-  "description": "Production-grade AI inference stepper with multi-provider fallback",
+  "description": "Resilient AI inference orchestrator for Node.js that provides queued execution, Redis-backed caching, provider failover, and callback/webhook delivery for production report-generation pipelines.",
+  "keywords": [
+    "ai",
+    "inference",
+    "stepper",
+    "llm",
+    "orchestration",
+    "commitdiary"
+  ],
+  "author": "Samuel Adedigba",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,14 +30,19 @@
     }
   },
   "bin": {
-    "stepper": "./dist/cli.js"
+    "stepper": "dist/cli.js"
   },
   "publishConfig": {
     "access": "public"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/samuel-adedigba/ai-inference-stepper.git"
+    "url": "git+https://github.com/samuel-adedigba/ai-inference-stepper.git"
   },
   "bugs": {
     "url": "https://github.com/samuel-adedigba/ai-inference-stepper/issues"

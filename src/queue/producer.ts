@@ -2,11 +2,11 @@
 
 import { Queue } from 'bullmq';
 import { v4 as uuidv4 } from 'uuid';
-import { getRedisClient } from '../cache/redisCache.js';
 import { PromptInput, StepperJobData, StepperRequest } from '../types.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
 import { createCommitReportRequest } from '../presets/commit-report/request.js';
+import { getQueueConnection } from './connection.js';
 
 let queue: Queue<StepperJobData<unknown, unknown>> | null = null;
 
@@ -15,8 +15,9 @@ let queue: Queue<StepperJobData<unknown, unknown>> | null = null;
  */
 export function getQueue(): Queue<StepperJobData<unknown, unknown>> {
     if (!queue) {
-        const connection = getRedisClient();
-        queue = new Queue<StepperJobData<unknown, unknown>>(config.queue.name, { connection });
+        queue = new Queue<StepperJobData<unknown, unknown>>(config.queue.name, {
+            connection: getQueueConnection(),
+        });
 
         logger.info({ queueName: config.queue.name }, 'BullMQ queue initialized');
     }

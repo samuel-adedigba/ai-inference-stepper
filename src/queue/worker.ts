@@ -1,7 +1,7 @@
 // packages/stepper/src/queue/worker.ts`
 
 import { Worker, Job } from 'bullmq';
-import { getRedisClient, setHydrated, markFailed, getReportCache } from '../cache/redisCache.js';
+import { setHydrated, markFailed, getReportCache } from '../cache/redisCache.js';
 import { generateRequestNow } from '../stepper/orchestrator.js';
 import { StepperCallbackPayload, StepperJobData, StepperProviderResult } from '../types.js';
 import { config } from '../config.js';
@@ -11,6 +11,7 @@ import { sendDiscordAlert } from '../alerts/discord.js';
 import { notifyWebhookSuccess, notifyWebhookFailure } from '../webhooks/delivery.js';
 import { deliverRequestCallbacks } from '../webhooks/requestCallbacks.js';
 import { toCommitReportInput } from '../presets/commit-report/request.js';
+import { getQueueConnection } from './connection.js';
 
 let worker: Worker<StepperJobData<unknown, unknown>> | null = null;
 
@@ -131,10 +132,8 @@ export function startWorker(): void {
         return;
     }
 
-    const connection = getRedisClient();
-
     worker = new Worker<StepperJobData<unknown, unknown>>(config.queue.name, processReportJob, {
-        connection,
+        connection: getQueueConnection(),
         concurrency: config.queue.concurrency, //(how many jobs it can do at once).
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 500 },

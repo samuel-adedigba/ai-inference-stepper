@@ -10,6 +10,8 @@ export { deepseekProviderSpec } from './catalog/deepseek.js';
 export { geminiProviderSpec } from './catalog/gemini.js';
 export { groqProviderSpec } from './catalog/groq.js';
 export { mistralProviderSpec } from './catalog/mistral.js';
+export { nvidiaProviderSpec } from './catalog/nvidia.js';
+export { nvidiaLlamaProviderSpec, nvidiaDracarysProviderSpec } from './catalog/nvidia.js';
 export { openaiProviderSpec } from './catalog/openai.js';
 export { openrouterProviderSpec } from './catalog/openrouter.js';
 export { perplexityProviderSpec } from './catalog/perplexity.js';

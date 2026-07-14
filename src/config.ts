@@ -61,6 +61,40 @@ export function loadConfig(): StepperConfig {
   // Provider configurations: Rules for how we talk to each AI
   const providers: ProviderConfig[] = [
     {
+      name: 'nvidia-llama',
+      enabled: process.env.NVIDIA_LLAMA_ENABLED === 'true',
+      baseUrl: process.env.NVIDIA_LLAMA_BASE_URL || process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',
+      modelName: process.env.NVIDIA_LLAMA_MODEL || 'meta/llama-3.3-70b-instruct',
+      apiKeyEnvVar: 'NVIDIA_API_KEY',
+      rateLimitRPM: parseInt(process.env.NVIDIA_LLAMA_RPM || process.env.NVIDIA_RPM || '5', 10),
+      concurrency: parseInt(process.env.NVIDIA_LLAMA_CONCURRENCY || process.env.NVIDIA_CONCURRENCY || '2', 10),
+      timeout: parseInt(process.env.NVIDIA_LLAMA_TIMEOUT || process.env.NVIDIA_TIMEOUT || '30000', 10),
+    },
+    {
+      name: 'nvidia-dracarys',
+      enabled: process.env.NVIDIA_DRACARYS_ENABLED === 'true',
+      baseUrl: process.env.NVIDIA_DRACARYS_BASE_URL || process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',
+      modelName: process.env.NVIDIA_DRACARYS_MODEL || 'abacusai/dracarys-llama-3.1-70b-instruct',
+      apiKeyEnvVar: 'NVIDIA_API_KEY',
+      rateLimitRPM: parseInt(process.env.NVIDIA_DRACARYS_RPM || process.env.NVIDIA_RPM || '5', 10),
+      concurrency: parseInt(process.env.NVIDIA_DRACARYS_CONCURRENCY || process.env.NVIDIA_CONCURRENCY || '2', 10),
+      timeout: parseInt(process.env.NVIDIA_DRACARYS_TIMEOUT || process.env.NVIDIA_TIMEOUT || '30000', 10),
+    },
+    {
+      name: 'nvidia',
+      // Preserve the legacy single-model setting only when the explicit model
+      // lanes are not configured, preventing an unintended third NVIDIA lane.
+      enabled: process.env.NVIDIA_ENABLED === 'true'
+        && process.env.NVIDIA_LLAMA_ENABLED !== 'true'
+        && process.env.NVIDIA_DRACARYS_ENABLED !== 'true',
+      baseUrl: process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',
+      modelName: process.env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct',
+      apiKeyEnvVar: 'NVIDIA_API_KEY',
+      rateLimitRPM: parseInt(process.env.NVIDIA_RPM || '5', 10),
+      concurrency: parseInt(process.env.NVIDIA_CONCURRENCY || '2', 10),
+      timeout: parseInt(process.env.NVIDIA_TIMEOUT || '30000', 10),
+    },
+    {
       name: 'hf-space',
       enabled: process.env.HF_SPACE_ENABLED === 'true',
       baseUrl: process.env.HF_SPACE_URL || 'https://your-space.hf.space',

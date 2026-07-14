@@ -10,6 +10,9 @@ import {
   geminiProviderSpec,
   groqProviderSpec,
   mistralProviderSpec,
+  nvidiaDracarysProviderSpec,
+  nvidiaLlamaProviderSpec,
+  nvidiaProviderSpec,
   openaiProviderSpec,
   openrouterProviderSpec,
   perplexityProviderSpec,
@@ -98,6 +101,15 @@ export function validateProviderConfig(config: ProviderConfig): ProviderConfigVa
       const apiKey = resolveApiKey(config, mistralProviderSpec.apiKeyEnvVar);
       return apiKey ? { valid: true } : { valid: false, reason: 'mistral requires apiKey (or MISTRAL_API_KEY env)' };
     }
+    case 'nvidia': {
+      const apiKey = resolveApiKey(config, nvidiaProviderSpec.apiKeyEnvVar);
+      return apiKey ? { valid: true } : { valid: false, reason: 'nvidia requires apiKey (or NVIDIA_API_KEY env)' };
+    }
+    case 'nvidia-llama':
+    case 'nvidia-dracarys': {
+      const apiKey = resolveApiKey(config, nvidiaLlamaProviderSpec.apiKeyEnvVar);
+      return apiKey ? { valid: true } : { valid: false, reason: `${providerName} requires apiKey (or NVIDIA_API_KEY env)` };
+    }
     case 'perplexity': {
       const apiKey = resolveApiKey(config, perplexityProviderSpec.apiKeyEnvVar);
       return apiKey ? { valid: true } : { valid: false, reason: 'perplexity requires apiKey (or PERPLEXITY_API_KEY env)' };
@@ -149,6 +161,12 @@ export function getProviderAdapter(config: ProviderConfig): ProviderAdapter | nu
       return createUnifiedProviderAdapter(config, openrouterProviderSpec);
     case 'mistral':
       return createUnifiedProviderAdapter(config, mistralProviderSpec);
+    case 'nvidia':
+      return createUnifiedProviderAdapter(config, nvidiaProviderSpec);
+    case 'nvidia-llama':
+      return createUnifiedProviderAdapter(config, nvidiaLlamaProviderSpec);
+    case 'nvidia-dracarys':
+      return createUnifiedProviderAdapter(config, nvidiaDracarysProviderSpec);
     case 'perplexity':
       return createUnifiedProviderAdapter(config, perplexityProviderSpec);
     case 'together':

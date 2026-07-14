@@ -5,6 +5,11 @@ import { deepseekProviderSpec } from './deepseek.js';
 import { geminiProviderSpec } from './gemini.js';
 import { groqProviderSpec } from './groq.js';
 import { mistralProviderSpec } from './mistral.js';
+import {
+  nvidiaDracarysProviderSpec,
+  nvidiaLlamaProviderSpec,
+  nvidiaProviderSpec,
+} from './nvidia.js';
 import { openaiProviderSpec } from './openai.js';
 import { openrouterProviderSpec } from './openrouter.js';
 import { perplexityProviderSpec } from './perplexity.js';
@@ -19,6 +24,9 @@ export const providerSpecsByName: Record<string, ProviderSpec> = {
   groq: groqProviderSpec,
   openrouter: openrouterProviderSpec,
   mistral: mistralProviderSpec,
+  nvidia: nvidiaProviderSpec,
+  'nvidia-llama': nvidiaLlamaProviderSpec,
+  'nvidia-dracarys': nvidiaDracarysProviderSpec,
   perplexity: perplexityProviderSpec,
   together: togetherProviderSpec,
 };

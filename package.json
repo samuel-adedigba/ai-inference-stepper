@@ -1,6 +1,6 @@
 {
   "name": "ai-inference-stepper",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Resilient AI inference orchestrator for Node.js that provides queued execution, Redis-backed caching, provider failover, and callback/webhook delivery for generation pipelines.",
   "keywords": [
     "ai",

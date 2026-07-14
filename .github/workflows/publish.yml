@@ -23,7 +23,7 @@ jobs:
           registry-url: https://registry.npmjs.org/
 
       - name: Install pnpm
-        run: npm install --global pnpm
+        run: npm install --global pnpm@10.33.1
 
       - name: Install dependencies
         run: pnpm install

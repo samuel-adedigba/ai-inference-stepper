@@ -1,0 +1,13 @@
+{
+    "title": "Stepper",
+    "description": "A TypeScript-first AI inference orchestrator with queue-backed execution, caching, fallback, and webhook delivery.",
+    "deployment": "https://github.com/samuel-adedigba/ai-inference-stepper",
+    "image": "https://raw.githubusercontent.com/samuel-adedigba/ai-inference-stepper/main/docs/assets/architecture.png",
+    "technologies": [
+        "TypeScript",
+        "Node.js",
+        "BullMQ",
+        "Redis",
+        "AI Orchestration"
+    ]
+}

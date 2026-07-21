@@ -39,4 +39,4 @@ Stepper uses BullMQ as the asynchronous execution layer.
 
 ## TODO
 
-- TODO: refactor — remove legacy wrapper once API/dashboard/cron flows no longer depend on report-specific enqueue paths.
+- TODO: refactor: remove legacy wrapper once API/dashboard/cron flows no longer depend on report-specific enqueue paths.

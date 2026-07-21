@@ -1,7 +1,7 @@
 /**
  * Legacy CommitDiary API deprecation plan.
  *
- * TODO: verify — align these milestones with actual npm release cadence
+ * TODO: verify: align these milestones with actual npm release cadence
  * before announcing removal in public changelog.
  */
 export const LEGACY_COMMIT_REPORT_API_DEPRECATION = {

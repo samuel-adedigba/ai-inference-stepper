@@ -13,7 +13,7 @@ export type HttpJsonOutputSchemaInput = {
   allowAdditionalKeys?: boolean;
 };
 
-// TODO: edge case — nested property rules are intentionally out of scope in this DSL.
+// TODO: edge case: nested property rules are intentionally out of scope in this DSL.
 // Use package runtime `zod/custom` schema APIs when deep structural validation is required.
 
 function isRecord(value: unknown): value is Record<string, unknown> {

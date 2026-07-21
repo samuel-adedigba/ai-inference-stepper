@@ -29,7 +29,7 @@ function verifyWebhookSignature(payload: string, signature: string, secret: stri
 /**
  * CommitDiary compatibility webhook endpoint.
  *
- * TODO: refactor — move this integration out of the generic Stepper package
+ * TODO: refactor: move this integration out of the generic Stepper package
  * into CommitDiary API package once preset-only bridge migration is complete.
  */
 export async function handleCommitReportWebhook(req: Request, res: Response, next: NextFunction) {
@@ -87,12 +87,12 @@ export async function handleCommitReportWebhook(req: Request, res: Response, nex
 
     if (reportPayload.status === 'completed' && reportPayload.commitId && reportPayload.repoId) {
       try {
-        const apiUrl = process.env.MAIN_API_URL || 'http://localhost:3001';
-        const apiKey = process.env.MAIN_API_KEY;
+        const apiUrl = process.env.API_URL || 'http://localhost:3001';
+        const apiKey = process.env.WEBHOOK_SECRET;
 
         if (!apiKey) {
-          logger.error('MAIN_API_KEY environment variable not set');
-          throw new Error('Main API key not configured');
+          logger.error('WEBHOOK_SECRET environment variable not set');
+          throw new Error('Webhook secret not configured');
         }
 
         const updateResponse = await fetch(`${apiUrl}/v1/internal/update-commit-status`, {

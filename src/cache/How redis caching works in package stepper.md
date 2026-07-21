@@ -52,4 +52,4 @@ CommitDiary preset cache identity is still preserved for legacy endpoints and mi
 
 ## TODO
 
-- TODO: verify — remove legacy `deleteReport` commit-key cleanup path when downstream callers are fully migrated to generic cache lifecycle.
+- TODO: verify: remove legacy `deleteReport` commit-key cleanup path when downstream callers are fully migrated to generic cache lifecycle.

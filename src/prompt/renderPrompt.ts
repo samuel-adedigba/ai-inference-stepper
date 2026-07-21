@@ -126,7 +126,7 @@ function resolveGenericPromptFromBuilder<TPayload>(
     return sanitizePrompt(composed);
   }
 
-  // TODO: caution — this fallback is intentionally generic and may be too raw for
+  // TODO: caution: this fallback is intentionally generic and may be too raw for
   // high-quality production prompts. Add richer generic prompt presets in later phases.
   return sanitizePrompt(stringifyFallback(context.payload));
 }

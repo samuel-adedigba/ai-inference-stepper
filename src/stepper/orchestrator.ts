@@ -127,7 +127,7 @@ export function initializeProviders(providerConfigs: ProviderConfig[] = config.p
     });
 
   if (providers.length === 0) {
-    // TODO: needs review — if free/anonymous providers are introduced later,
+    // TODO: needs review: if free/anonymous providers are introduced later,
     // update validateProviderConfig(...) so they can pass startup checks safely.
     throw new StepperProviderConfigurationError(
       `No usable providers configured. Enabled providers: ${enabledProviders.length}. ` +
@@ -404,7 +404,7 @@ export async function generateRequestNow<TOutput = unknown>(
       'All providers rate-limited; returning retryable error instead of fallback output'
     );
 
-    // TODO: verify — include retryAfterSeconds in queue-level metadata so
+    // TODO: verify: include retryAfterSeconds in queue-level metadata so
     // backoff can follow provider hints more precisely.
     await invokeCallback('onFailure', jobId, failedAttempts, {
       lastError: failedAttempts[failedAttempts.length - 1]?.error,

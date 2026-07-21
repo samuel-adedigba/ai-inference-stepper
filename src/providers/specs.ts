@@ -26,7 +26,7 @@ export const PROVIDER_SPECS: Record<string, ProviderSpec> = providerSpecsByName;
 /**
  * Get provider spec by name.
  *
- * TODO: refactor — remove once no internal/external call sites rely on map lookup.
+ * TODO: refactor: remove once no internal/external call sites rely on map lookup.
  */
 export function getProviderSpec(name: string): ProviderSpec | undefined {
   return PROVIDER_SPECS[name.toLowerCase()];

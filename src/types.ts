@@ -191,6 +191,11 @@ export interface CacheEntry {
   ttl?: number;
   etag?: string;
   fallback?: boolean;
+  usedProvider?: string;
+  timings?: {
+    totalMs: number;
+    providerMs?: number;
+  };
   error?: string;
 }
 

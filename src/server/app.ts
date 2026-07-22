@@ -10,7 +10,7 @@ import { getMetrics } from '../metrics/metrics.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
 import { handleCommitReportWebhook } from '../presets/commit-report/webhookEndpoint.js';
-import { toCommitReportInput } from '../presets/commit-report/request.js';
+import { toCommitReportInput, validateCommitReportInput } from '../presets/commit-report/request.js';
 import { parseHttpOutputSchemaInput, toRuntimeOutputSchemaFromHttp } from '../validation/httpOutputSchema.js';
 
 const app: Application = express();
@@ -227,11 +227,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function validateLegacyCommitInput(input: PromptInput): string | null {
-  if (!input.userId || !input.commitSha || !input.repo || !input.message) {
-    return 'Missing required fields: userId, commitSha, repo, message';
-  }
-  return null;
+function validateLegacyCommitInput(input: unknown): string | null {
+  const result = validateCommitReportInput(input);
+  return result.valid ? null : result.error;
 }
 
 function validateGenericRequest(request: unknown): { valid: true; request: StepperRequest<unknown, unknown> } | { valid: false; error: string } {
@@ -365,10 +363,10 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
     : null;
   const completedResult = job.result || (cached?.status === 'hydrated' ? {
     result: cached.result,
-    usedProvider: 'cache',
+    usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
     providersAttempted: cached.providersAttempted || [],
     fallback: cached.fallback || false,
-    timings: { totalMs: 0 },
+    timings: cached.timings || { totalMs: 0 },
   } : null);
 
   if (job.state === 'completed' && completedResult) {
@@ -415,6 +413,11 @@ app.post('/v1/generate', userRateLimiter, async (req: Request, res: Response, ne
         cached: true,
         stale: result.stale,
         data: result.data,
+        metadata: {
+          provider: result.usedProvider,
+          fallback: result.fallback,
+          timings: result.timings,
+        },
       });
     }
 
@@ -510,6 +513,11 @@ app.post('/v1/reports', userRateLimiter, async (req: Request, res: Response, nex
         cached: true,
         stale: result.stale,
         data: result.data,
+        metadata: {
+          provider: result.usedProvider,
+          fallback: result.fallback,
+          timings: result.timings,
+        },
       });
     } else {
       return res.status(202).json({

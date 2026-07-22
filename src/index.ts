@@ -93,7 +93,15 @@ export function registerCallbacks(callbacks: StepperCallbacks): void {
 }
 
 type EnqueueResult<TOutput> =
-    | { status: 200; data: TOutput; cached: true; stale?: boolean }
+    | {
+        status: 200;
+        data: TOutput;
+        cached: true;
+        stale?: boolean;
+        usedProvider: string;
+        fallback: boolean;
+        timings: { totalMs: number; providerMs?: number };
+      }
     | { status: 202; jobId: string; cached: false };
 
 type EnqueueOptions = {
@@ -130,7 +138,14 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
                 logger.error({ err, cacheKey }, 'Failed to cleanup cache after fresh hit');
             });
 
-            return { status: 200, data: cached.result as TOutput, cached: true };
+            return {
+                status: 200,
+                data: cached.result as TOutput,
+                cached: true,
+                usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
+                fallback: cached.fallback || false,
+                timings: cached.timings || { totalMs: 0 },
+            };
         }
 
         if (isStaleButUsable(cached)) {
@@ -141,7 +156,15 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
                 logger.error({ err, cacheKey }, 'Failed to enqueue background refresh');
             });
 
-            return { status: 200, data: cached.result as TOutput, cached: true, stale: true };
+            return {
+                status: 200,
+                data: cached.result as TOutput,
+                cached: true,
+                stale: true,
+                usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
+                fallback: cached.fallback || false,
+                timings: cached.timings || { totalMs: 0 },
+            };
         }
     }
 

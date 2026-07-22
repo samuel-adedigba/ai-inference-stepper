@@ -2,12 +2,16 @@
 
 import crypto from 'crypto';
 import { logger, createChildLogger } from '../logging.js';
+import { getCallbackLogOrigin, isAllowedCallbackUrl } from '../security/callbackUrls.js';
 
 export interface WebhookPayload {
     jobId: string;
     status: 'completed' | 'failed';
     result?: unknown;
     error?: string;
+    provider?: string;
+    generationTimeMs?: number;
+    fallback?: boolean;
     timestamp: number;
 }
 
@@ -39,6 +43,10 @@ export async function sendWebhook(
 ): Promise<{ success: boolean; statusCode?: number; error?: string }> {
     const log = createChildLogger({ jobId: payload.jobId, webhookAttempt: attempt });
 
+    if (!isAllowedCallbackUrl(config.url)) {
+        return { success: false, error: 'Webhook URL origin is not allowed' };
+    }
+
     const maxRetries = config.maxRetries || 3;
     const retryDelayMs = config.retryDelayMs || 5000;
 
@@ -46,7 +54,7 @@ export async function sendWebhook(
         const payloadString = JSON.stringify(payload);
         const signature = generateSignature(payloadString, config.secret);
 
-        log.info({ url: config.url, attempt, maxRetries }, 'Sending webhook');
+        log.info({ callbackOrigin: getCallbackLogOrigin(config.url), attempt, maxRetries }, 'Sending webhook');
 
         const response = await fetch(config.url, {
             method: 'POST',
@@ -110,12 +118,16 @@ export async function notifyWebhookSuccess(
     webhookUrl: string,
     webhookSecret: string,
     jobId: string,
-    result: unknown
+    result: unknown,
+    metadata: { provider?: string; generationTimeMs?: number; fallback?: boolean } = {}
 ): Promise<void> {
     const payload: WebhookPayload = {
         jobId,
         status: 'completed',
         result,
+        provider: metadata.provider,
+        generationTimeMs: metadata.generationTimeMs,
+        fallback: metadata.fallback,
         timestamp: Date.now()
     };
 

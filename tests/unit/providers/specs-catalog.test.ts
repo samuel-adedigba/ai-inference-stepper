@@ -84,6 +84,12 @@ describe('Provider Catalog Specs', () => {
       if (name === 'gemini') {
         // Gemini auth is query-param based, so header auth is intentionally absent.
         expect(headers.Authorization).toBeUndefined();
+        const generationConfig = body.generationConfig as Record<string, unknown>;
+        expect(generationConfig.responseMimeType).toBe('application/json');
+        expect(generationConfig.responseSchema).toMatchObject({
+          type: 'OBJECT',
+          required: expect.arrayContaining(['title', 'changes', 'impact_and_tests']),
+        });
       } else {
         expect(Object.values(headers).some((value) => String(value).includes(apiKey))).toBe(true);
       }

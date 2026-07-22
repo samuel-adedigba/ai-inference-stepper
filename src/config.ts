@@ -197,7 +197,7 @@ export function loadConfig(): StepperConfig {
         enabled: process.env.CORS_ENABLED !== 'false', // Enabled by default
         allowedOrigins: process.env.CORS_ALLOWED_ORIGINS
           ? process.env.CORS_ALLOWED_ORIGINS.split(',').map(s => s.trim())
-          : ['*'], // Default allows all; in production, specify your domains
+          : process.env.NODE_ENV === 'production' ? [] : ['*'],
         allowCredentials: process.env.CORS_ALLOW_CREDENTIALS === 'true',
       },
       // Rate Limiting: Prevent abuse and DDoS
@@ -214,7 +214,8 @@ export function loadConfig(): StepperConfig {
       },
       // API Key: Simple authentication for API access
       apiKey: {
-        enabled: process.env.API_KEY_ENABLED === 'true', // Disabled by default; opt-in
+        // Production must fail closed if the deployment forgets the opt-in flag.
+        enabled: process.env.NODE_ENV === 'production' || process.env.API_KEY_ENABLED === 'true',
         headerName: process.env.API_KEY_HEADER || 'x-api-key',
         skipHealthEndpoints: process.env.API_KEY_SKIP_HEALTH !== 'false', // Skip auth for health/metrics
       },

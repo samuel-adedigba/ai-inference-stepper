@@ -12,7 +12,7 @@ Stepper cache is Redis-backed and request-centric.
 ## Cache entry states
 
 - `dehydrated`: job is queued/running, contains `jobId`
-- `hydrated`: completed result available (`result: unknown`)
+- `hydrated`: completed result plus original provider/fallback/timing provenance
 - `failed`: generation failed, includes error metadata
 
 ## Key building
@@ -26,7 +26,7 @@ Stepper cache is Redis-backed and request-centric.
 
 - `getReportCache(key)`
 - `setDehydrated(key, jobId)`
-- `setHydrated(key, result, providersAttempted, fallback, ttl?)`
+- `setHydrated(key, result, providersAttempted, fallback, ttl?, provenance?)`
 - `markFailed(key, errorMessage, providersAttempted)`
 - `isHydratedFresh(entry)`
 - `isStaleButUsable(entry)`

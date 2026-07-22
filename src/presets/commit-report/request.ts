@@ -4,8 +4,59 @@ import {
   PromptBuilderInput,
   StepperRequest,
 } from '../../types.js';
+import { z } from 'zod';
+import { isAllowedCallbackUrl } from '../../security/callbackUrls.js';
 
 const COMMIT_REPORT_PRESET = 'commit-report';
+
+const CallbackSchema = z.object({
+  url: z.string().url().max(2_048).refine(
+    isAllowedCallbackUrl,
+    'Callback URL origin is not allowed'
+  ),
+  headers: z.record(z.string().max(2_048)).optional().refine(
+    (headers) => !headers || Object.keys(headers).length <= 20,
+    'Callback headers must not exceed 20 entries'
+  ),
+  continueOnFailure: z.boolean().optional(),
+  retry: z.object({
+    maxAttempts: z.number().int().min(1).max(5),
+    backoffMs: z.number().int().min(100).max(60_000),
+  }).optional(),
+});
+
+export const CommitReportInputSchema = z.object({
+  userId: z.string().trim().min(1).max(128),
+  commitSha: z.string().trim().min(1).max(64),
+  repo: z.string().trim().min(1).max(255),
+  message: z.string().trim().min(1).max(10_000),
+  files: z.array(z.string().max(2_048)).max(2_000),
+  components: z.array(z.string().max(256)).max(200),
+  diffSummary: z.string().max(32_000),
+  template: z.string().max(10_000).optional(),
+  callbackUrl: z.string().url().max(2_048).refine(
+    isAllowedCallbackUrl,
+    'Callback URL origin is not allowed'
+  ).optional(),
+  callbacks: z.array(CallbackSchema).max(5).optional(),
+});
+
+export function validateCommitReportInput(input: unknown): {
+  valid: true;
+  input: CommitReportInput;
+} | {
+  valid: false;
+  error: string;
+} {
+  const result = CommitReportInputSchema.safeParse(input);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    const field = issue.path.join('.') || 'request';
+    return { valid: false, error: `${field}: ${issue.message}` };
+  }
+
+  return { valid: true, input: result.data as CommitReportInput };
+}
 
 /**
  * Build a generic Stepper request from legacy CommitDiary-shaped input.
@@ -17,22 +68,27 @@ const COMMIT_REPORT_PRESET = 'commit-report';
 export function createCommitReportRequest(
   input: CommitReportInput
 ): StepperRequest<CommitReportInput, CommitReportOutput> {
+  const validation = validateCommitReportInput(input);
+  if (!validation.valid) {
+    throw new Error(`Invalid commit report input: ${validation.error}`);
+  }
+  const validatedInput = validation.input;
   const prompt: PromptBuilderInput<CommitReportInput> = {
     preset: COMMIT_REPORT_PRESET,
-    template: input.template,
-    payload: input,
+    template: validatedInput.template,
+    payload: validatedInput,
   };
 
   return {
-    requestId: `${input.userId}:${input.commitSha}`,
+    requestId: `${validatedInput.userId}:${validatedInput.commitSha}`,
     prompt,
-    payload: input,
+    payload: validatedInput,
     responseMode: 'json',
-    callbacks: input.callbacks,
+    callbacks: validatedInput.callbacks,
     metadata: {
-      userId: input.userId,
-      commitSha: input.commitSha,
-      repo: input.repo,
+      userId: validatedInput.userId,
+      commitSha: validatedInput.commitSha,
+      repo: validatedInput.repo,
     },
   };
 }
@@ -68,32 +124,8 @@ export function toCommitReportInput(
     return null;
   }
 
-  const payload = request.payload as Partial<CommitReportInput>;
-
-  // Guard required fields to avoid passing malformed generic requests into legacy paths.
-  if (
-    typeof payload.userId !== 'string' ||
-    typeof payload.commitSha !== 'string' ||
-    typeof payload.repo !== 'string' ||
-    typeof payload.message !== 'string' ||
-    !Array.isArray(payload.files) ||
-    !Array.isArray(payload.components) ||
-    typeof payload.diffSummary !== 'string'
-  ) {
-    return null;
-  }
-
-  return {
-    userId: payload.userId,
-    commitSha: payload.commitSha,
-    repo: payload.repo,
-    message: payload.message,
-    files: payload.files,
-    components: payload.components,
-    diffSummary: payload.diffSummary,
-    template: payload.template,
-    callbacks: payload.callbacks,
-  };
+  const validation = validateCommitReportInput(request.payload);
+  return validation.valid ? validation.input : null;
 }
 
 export { COMMIT_REPORT_PRESET };

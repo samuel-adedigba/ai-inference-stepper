@@ -153,7 +153,11 @@ export async function setHydrated(
     result: unknown,
     providersAttempted: ProviderAttemptMeta[],
     fallback: boolean = false,
-    ttl?: number // How long to keep it	604800 (7 days in seconds)
+    ttl?: number, // How long to keep it	604800 (7 days in seconds)
+    provenance?: {
+        usedProvider: string;
+        timings: { totalMs: number; providerMs?: number };
+    }
 ): Promise<void> {
     const redis = getRedisClient();
 
@@ -162,6 +166,8 @@ export async function setHydrated(
         result,
         providersAttempted,
         fallback,
+        usedProvider: provenance?.usedProvider,
+        timings: provenance?.timings,
         timestamps: {
             created: new Date().toISOString(),
             updated: new Date().toISOString(),

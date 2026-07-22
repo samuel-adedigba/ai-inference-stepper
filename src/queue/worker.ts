@@ -1,7 +1,12 @@
 // packages/stepper/src/queue/worker.ts`
 
 import { Worker, Job } from 'bullmq';
-import { setHydrated, markFailed, getReportCache } from '../cache/redisCache.js';
+import {
+    setHydrated,
+    markFailed,
+    getReportCache,
+    isHydratedFresh,
+} from '../cache/redisCache.js';
 import { generateRequestNow } from '../stepper/orchestrator.js';
 import { StepperCallbackPayload, StepperJobData, StepperProviderResult } from '../types.js';
 import { config } from '../config.js';
@@ -10,6 +15,7 @@ import { recordJobProcessed, recordJobFailed } from '../metrics/metrics.js';
 import { sendDiscordAlert } from '../alerts/discord.js';
 import { notifyWebhookSuccess, notifyWebhookFailure } from '../webhooks/delivery.js';
 import { deliverRequestCallbacks } from '../webhooks/requestCallbacks.js';
+import { getCallbackLogOrigin } from '../security/callbackUrls.js';
 import { toCommitReportInput } from '../presets/commit-report/request.js';
 import { getQueueConnection } from './connection.js';
 
@@ -28,25 +34,55 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
 
     log.info('Processing report job');
 
+    const sendCompletionWebhook = async (result: StepperProviderResult<unknown>): Promise<void> => {
+        if (!job.data.callbackUrl || !config.webhook.enabled) return;
+
+        log.info(
+            { callbackOrigin: getCallbackLogOrigin(job.data.callbackUrl) },
+            'Sending success webhook'
+        );
+        await notifyWebhookSuccess(
+            job.data.callbackUrl,
+            config.webhook.secret,
+            jobId,
+            result.result,
+            {
+                provider: result.usedProvider,
+                generationTimeMs: result.timings.totalMs,
+                fallback: result.fallback,
+            }
+        );
+    };
+
     try {
         // Check cache again (avoid race condition)
         const cached = await getReportCache(cacheKey);
-        if (cached && cached.status === 'hydrated') {
+        if (cached && cached.status === 'hydrated' && isHydratedFresh(cached)) {
             log.info('Report already hydrated in cache, skipping generation');
-            return {
+            const cachedResult: StepperProviderResult<unknown> = {
                 result: cached.result,
-                usedProvider: 'cache',
+                usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
                 providersAttempted: cached.providersAttempted || [],
                 fallback: cached.fallback || false,
-                timings: { totalMs: 0 },
+                timings: cached.timings || { totalMs: 0 },
             };
+            await job.updateProgress(100);
+            await sendCompletionWebhook(cachedResult);
+            return cachedResult;
         }
 
         // Generate request output with full generic request contract.
         const result = await generateRequestNow(request, jobId);
 
         // Store in cache
-        await setHydrated(cacheKey, result.result, result.providersAttempted, result.fallback);
+        await setHydrated(
+            cacheKey,
+            result.result,
+            result.providersAttempted,
+            result.fallback,
+            undefined,
+            { usedProvider: result.usedProvider, timings: result.timings }
+        );
 
         // Update job progress
         await job.updateProgress(100);
@@ -56,15 +92,7 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
 
         // Note: input.callbacks are already executed in orchestrator immediately after generation
         // The callbackUrl below is the legacy webhook for backwards compatibility
-        if (job.data.callbackUrl && config.webhook.enabled) {
-            log.info({ callbackUrl: job.data.callbackUrl }, 'Sending success webhook');
-            await notifyWebhookSuccess(
-                job.data.callbackUrl,
-                config.webhook.secret,
-                jobId,
-                result.result
-            );
-        }
+        await sendCompletionWebhook(result);
 
         return result;
     } catch (error) {
@@ -108,7 +136,10 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
 
         // Send failure webhook notification if configured (legacy)
         if (job.data.callbackUrl && config.webhook.enabled) {
-            log.info({ callbackUrl: job.data.callbackUrl }, 'Sending failure webhook');
+            log.info(
+                { callbackOrigin: getCallbackLogOrigin(job.data.callbackUrl) },
+                'Sending failure webhook'
+            );
             await notifyWebhookFailure(
                 job.data.callbackUrl,
                 config.webhook.secret,

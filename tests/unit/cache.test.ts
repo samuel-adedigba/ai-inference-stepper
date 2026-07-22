@@ -79,12 +79,21 @@ describe('Cache', () => {
             tags: 'test',
         };
 
-        await setHydrated(key, report, [], false, 3600);
+        await setHydrated(
+            key,
+            report,
+            [],
+            false,
+            3600,
+            { usedProvider: 'gemini', timings: { totalMs: 912, providerMs: 800 } },
+        );
         const result = await getReportCache(key);
 
         expect(result).toBeDefined();
         expect(result?.status).toBe('hydrated');
         expect(result?.result).toEqual(report);
+        expect(result?.usedProvider).toBe('gemini');
+        expect(result?.timings).toEqual({ totalMs: 912, providerMs: 800 });
     });
 
     it('should identify fresh cache entries', () => {

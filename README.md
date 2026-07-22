@@ -209,15 +209,19 @@ STEPPER_PORT=3005
 NODE_ENV=development
 ```
 
+In production, callback delivery is limited to the origin in `API_URL` plus
+origins explicitly listed in `CALLBACK_ALLOWED_ORIGINS` (comma-separated).
+
 ## CommitDiary Integration
 
 Stepper powers CommitDiary report generation:
 
 1. Extension/API submits report jobs.
-2. Stepper checks cache and queues when needed.
-3. Worker processes through configured providers.
-4. Result returns via callback/webhook.
-5. API stores report and triggers downstream notifications.
+2. Stepper validates input and fits high-signal commit evidence to a bounded model context.
+3. Stepper checks cache and queues when needed.
+4. Worker processes through configured providers and validates structured output.
+5. Result and generation provenance return via callback/webhook.
+6. API stores the full report and triggers downstream notifications.
 
 ```mermaid
 flowchart LR

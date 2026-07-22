@@ -1,5 +1,6 @@
 import { logger, createChildLogger } from '../logging.js';
 import { StepperCallbackPayload, WebhookCallback } from '../types.js';
+import { getCallbackLogOrigin, isAllowedCallbackUrl } from '../security/callbackUrls.js';
 
 export interface CallbackDeliveryResult {
   url: string;
@@ -17,9 +18,18 @@ async function deliverSingleCallback(
   payload: StepperCallbackPayload<unknown>,
   jobId?: string
 ): Promise<CallbackDeliveryResult> {
+  if (!isAllowedCallbackUrl(callback.url)) {
+    return {
+      url: callback.url,
+      success: false,
+      error: 'Callback URL origin is not allowed',
+    };
+  }
+
   const maxAttempts = callback.retry?.maxAttempts ?? 3;
   const backoffMs = callback.retry?.backoffMs ?? 1000;
-  const log = createChildLogger({ jobId, callbackUrl: callback.url });
+  const callbackOrigin = getCallbackLogOrigin(callback.url);
+  const log = createChildLogger({ jobId, callbackOrigin });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
@@ -90,7 +100,10 @@ export async function deliverRequestCallbacks(
     results.push(result);
 
     if (!result.success && !callback.continueOnFailure) {
-      logger.warn({ callbackUrl: callback.url, jobId: options.jobId }, 'Callback failed, stopping delivery chain');
+      logger.warn(
+        { callbackOrigin: getCallbackLogOrigin(callback.url), jobId: options.jobId },
+        'Callback failed, stopping delivery chain'
+      );
       break;
     }
   }

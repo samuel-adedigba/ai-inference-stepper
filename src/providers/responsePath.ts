@@ -1,3 +1,5 @@
+import { InvalidResponseError } from './provider.interface.js';
+
 export type PathKey = string | number;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -40,7 +42,7 @@ export function getStringAtPath(value: unknown, path: PathKey[]): string | undef
 export function requireStringAtPath(value: unknown, path: PathKey[], errorMessage: string): string {
   const result = getStringAtPath(value, path);
   if (!result) {
-    throw new Error(errorMessage);
+    throw new InvalidResponseError(errorMessage);
   }
 
   return result;

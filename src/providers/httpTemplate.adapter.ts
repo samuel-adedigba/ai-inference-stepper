@@ -16,7 +16,7 @@ import { renderProviderPrompt } from '../prompt/renderPrompt.js';
  * Usage:
  *   const gemini = new HttpTemplateAdapter({
  *     name: 'gemini',
- *     baseUrl: 'https://generativelanguage.googleapis.com/v1',
+ *     baseUrl: 'https://generativelanguage.googleapis.com',
  *     apiKeyEnvVar: 'GEMINI_API_KEY',
  *     buildRequest: (prompt, apiKey) => ({ ... }),
  *     parseResponse: (data) => ({ ... })

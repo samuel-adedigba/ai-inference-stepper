@@ -121,8 +121,9 @@ export function loadConfig(): StepperConfig {
     {
       name: 'gemini',
       enabled: process.env.GEMINI_ENABLED === 'true',
-      baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1',
-      modelName: process.env.GEMINI_MODEL || 'gemini-pro',
+      // The catalog endpoint already includes /v1beta; keep the base URL unversioned.
+      baseUrl: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com',
+      modelName: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
       apiKeyEnvVar: 'GEMINI_API_KEY',
       rateLimitRPM: parseInt(process.env.GEMINI_RPM || '5', 10),
       concurrency: parseInt(process.env.GEMINI_CONCURRENCY || '2', 10),

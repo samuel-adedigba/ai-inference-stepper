@@ -6,13 +6,13 @@ export const openaiProviderSpec: ProviderSpec = {
   baseUrl: 'https://api.openai.com',
   endpoint: '/v1/chat/completions',
   apiKeyEnvVar: 'OPENAI_API_KEY',
-  defaultModel: 'gpt-4-turbo-preview',
+  defaultModel: 'gpt-4.1-mini',
   buildHeaders: (apiKey) => ({
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey || ''}`,
   }),
   buildBody: (prompt, model) => ({
-    model: model || 'gpt-4-turbo-preview',
+    model: model || 'gpt-4.1-mini',
     messages: [
       { role: 'system', content: 'You are an expert software engineer analyzing code commits. Always respond with valid JSON only.' },
       { role: 'user', content: prompt },

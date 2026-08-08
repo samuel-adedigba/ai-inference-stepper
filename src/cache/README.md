@@ -22,6 +22,10 @@ Stepper cache is Redis-backed and request-centric.
   - otherwise deterministic hash from request identity/prompt/payload/schema hints
 - Commit compatibility: preset helper in `presets/commit-report/cacheKey.ts`
 
+Generic requests support `cacheControl` values of `default`, `no-cache`, and
+`refresh`. These control cache reads; successful generation still stores the
+latest result under the request cache key.
+
 ## Core APIs
 
 - `getReportCache(key)`

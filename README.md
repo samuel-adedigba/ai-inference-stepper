@@ -11,7 +11,21 @@
 **Stepper** is a TypeScript-first AI inference orchestrator that makes AI workflows reliable under production load.
 It provides queue-backed execution, Redis caching, provider failover, circuit breakers, rate limiting, and callback/webhook delivery.
 
+Stepper is a generic reliability layer. It is not limited to commit reports or CommitDiary. You can use it for
+classification, extraction, summarization, moderation, enrichment, translation, indexing, and other workflows that
+need an asynchronous inference job with a validated result.
+
 ## Links
+
+### Documentation
+
+- [Documentation home](./docs/README.md) — choose a path by integration goal
+- [Developer implementation guide](./docs/DEVELOPER_IMPLEMENTATION_GUIDE.md) — complete setup and API procedure
+- [Architecture reference](./ARCHITECTURE.md) — queues, workers, cache, and provider flow
+- [Testing guide](./TESTING_GUIDE.md) — local verification and integration checks
+- [API feedback and implementation status](./docs/STEPPER_API_FEEDBACK.md) — current improvements and help wanted
+
+### Repository context
 
 - Root README: [../../README.md](../../README.md)
 - CommitDiary API: [../api/README.md](../api/README.md)
@@ -139,6 +153,8 @@ flowchart TD
 
 ## Usage Modes
 
+For a complete implementation guide, see [Developer implementation guide](./docs/DEVELOPER_IMPLEMENTATION_GUIDE.md).
+
 ### Mode A: Library Integration
 
 Use this for monorepos or tightly-coupled services.
@@ -198,10 +214,19 @@ Example response:
 }
 ```
 
+Generic requests use `/v1/generate`, not the legacy `/v1/reports` preset. See the implementation guide for the
+complete request and response contract. For multiple independently identified requests, use `/v1/generate/batch` and
+read the [batch generation section](./docs/DEVELOPER_IMPLEMENTATION_GUIDE.md#batch-generation).
+
 ## Environment
 
 ```env
 REDIS_URL=redis://localhost:6379
+QUEUE_NAME=stepper-single
+BATCH_QUEUE_NAME=stepper-batch
+BATCH_QUEUE_CONCURRENCY=2
+BATCH_MAX_CONCURRENCY=5
+BATCH_MAX_ITEMS=100
 GEMINI_API_KEY=
 COHERE_API_KEY=
 HF_API_KEY=

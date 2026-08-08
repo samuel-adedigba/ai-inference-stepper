@@ -1,17 +1,22 @@
 // packages/stepper/src/server/app.ts
 
 import express, { Request, Response, NextFunction, Application } from 'express';
+import { createHash } from 'node:crypto';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { enqueueReport, enqueueRequest, generateReport, generateRequest, getJob, healthcheck, deleteReport, PromptInput, StepperRequest } from '../index.js';
+import { enqueueBatchJob } from '../queue/producer.js';
 import { getReportCache } from '../cache/redisCache.js';
 import { getMetrics } from '../metrics/metrics.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
+import { JobFailure, STEPPER_HTTP_CONTRACT_VERSION, StepperBatchRequest } from '../types.js';
 import { handleCommitReportWebhook } from '../presets/commit-report/webhookEndpoint.js';
 import { toCommitReportInput, validateCommitReportInput } from '../presets/commit-report/request.js';
 import { parseHttpOutputSchemaInput, toRuntimeOutputSchemaFromHttp } from '../validation/httpOutputSchema.js';
+import { validateBatchEnvelope } from '../validation/batch.js';
+import { getRateLimitRedisClient, RedisRateLimitStore } from './redisRateLimitStore.js';
 
 const app: Application = express();
 
@@ -82,14 +87,12 @@ if (config.security.cors.enabled) {
 // 3. Rate Limiting - Prevent abuse and DDoS attacks
 
 
-// Store for user-based rate limiting (in-memory, consider Redis for multi-instance)
-const userRequestCounts = new Map<string, { count: number; resetTime: number }>();
-
 // IP-based rate limiter
 if (config.security.rateLimit.enabled) {
   const ipRateLimiter = rateLimit({
     windowMs: config.security.rateLimit.windowMs,
     max: config.security.rateLimit.maxRequests,
+    store: new RedisRateLimitStore(),
     standardHeaders: true, // Return rate limit info in headers
     legacyHeaders: false, // Disable X-RateLimit headers
     skip: (req) => {
@@ -119,55 +122,58 @@ if (config.security.rateLimit.enabled) {
 }
 
 // User-based rate limiting middleware (applied to /v1 routes)
-const userRateLimiter = (req: Request, res: Response, next: NextFunction) => {
+const userRateLimiter = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
   if (!config.security.rateLimit.enabled) {
-    return next();
+    next();
+    return;
   }
 
   const rateLimitKey = extractRateLimitKey(req);
   if (!rateLimitKey) {
-    return next();
+    next();
+    return;
   }
 
   const now = Date.now();
   const windowMs = config.security.rateLimit.windowMs;
   const maxPerUser = config.security.rateLimit.maxRequestsPerUser;
 
-  // Get or create user entry
-  let userEntry = userRequestCounts.get(rateLimitKey);
-  if (!userEntry || now > userEntry.resetTime) {
-    userEntry = { count: 0, resetTime: now + windowMs };
-    userRequestCounts.set(rateLimitKey, userEntry);
-  }
+  // Charge batch requests by item count so one HTTP call cannot bypass the
+  // consumer capacity limit with many upstream provider calls.
+  const requestWeight = req.path === '/v1/generate/batch' && Array.isArray(req.body?.items)
+    ? Math.max(1, Math.min(req.body.items.length, config.batch.maxItems))
+    : 1;
 
-  userEntry.count++;
+  try {
+    // Hash caller-controlled identifiers before using them in Redis keys.
+    const digest = createHash('sha256').update(rateLimitKey).digest('hex');
+    const bucket = Math.floor(now / windowMs);
+    const redisKey = `${config.redis.keyPrefix}rate-limit:user:${digest}:${bucket}`;
+    const redis = getRateLimitRedisClient();
+    const count = await redis.incrby(redisKey, requestWeight);
+    if (count === requestWeight) {
+      await redis.pexpire(redisKey, windowMs);
+    }
 
-  if (userEntry.count > maxPerUser) {
-    logger.warn({ rateLimitKey, count: userEntry.count, path: req.path }, 'Rate limit exceeded (User/Tenant)');
-    return res.status(429).json({
-      error: 'Too many requests',
-      message: 'You have exceeded the request rate limit. Please try again later.',
-      retryAfter: Math.ceil((userEntry.resetTime - now) / 1000),
-    });
+    if (count > maxPerUser) {
+      const ttl = await redis.pttl(redisKey);
+      logger.warn({ rateLimitKey, count, path: req.path }, 'Rate limit exceeded (User/Tenant)');
+      res.status(429).json({
+        error: 'Too many requests',
+        message: 'You have exceeded the request rate limit. Please try again later.',
+        retryAfter: Math.ceil((ttl > 0 ? ttl : windowMs) / 1000),
+      });
+      return;
+    }
+  } catch (error) {
+    // Do not fail open when the shared limiter cannot be reached.
+    logger.error({ error, path: req.path }, 'Distributed user rate limiter unavailable');
+    res.status(503).json({ error: 'Rate limiter unavailable', message: 'Please retry shortly.' });
+    return;
   }
 
   next();
 };
-
-// Cleanup stale entries periodically (every 15 minutes)
-setInterval(() => {
-  const now = Date.now();
-  let cleaned = 0;
-  for (const [userId, entry] of userRequestCounts.entries()) {
-    if (now > entry.resetTime) {
-      userRequestCounts.delete(userId);
-      cleaned++;
-    }
-  }
-  if (cleaned > 0) {
-    logger.debug({ cleaned }, 'Cleaned stale user rate limit entries');
-  }
-}, 15 * 60 * 1000);
 
 //4. API Key Authentication - Protect endpoints from unauthorized access
 const apiKeyAuth = (req: Request, res: Response, next: NextFunction) => {
@@ -232,7 +238,11 @@ function validateLegacyCommitInput(input: unknown): string | null {
   return result.valid ? null : result.error;
 }
 
-function validateGenericRequest(request: unknown): { valid: true; request: StepperRequest<unknown, unknown> } | { valid: false; error: string } {
+type GenericRequestValidation =
+  | { valid: true; request: StepperRequest<unknown, unknown> }
+  | { valid: false; error: string; errorCode?: string; supportedVersion?: string };
+
+function validateGenericRequest(request: unknown): GenericRequestValidation {
   if (!isRecord(request)) {
     return { valid: false, error: 'Request body must be an object' };
   }
@@ -251,6 +261,25 @@ function validateGenericRequest(request: unknown): { valid: true; request: Stepp
 
   if (request.responseMode !== undefined && request.responseMode !== 'json' && request.responseMode !== 'text') {
     return { valid: false, error: "Invalid responseMode: expected 'json' or 'text'" };
+  }
+
+  if (request.contractVersion !== undefined && request.contractVersion !== STEPPER_HTTP_CONTRACT_VERSION) {
+    return {
+      valid: false,
+      error: 'Request contract version is not supported',
+      errorCode: 'SCHEMA_VERSION_MISMATCH',
+      supportedVersion: STEPPER_HTTP_CONTRACT_VERSION,
+    };
+  }
+
+  if (request.cacheControl !== undefined && !['default', 'no-cache', 'refresh'].includes(request.cacheControl as string)) {
+    return { valid: false, error: "Invalid cacheControl: expected 'default', 'no-cache', or 'refresh'" };
+  }
+
+  for (const field of ['preferredProviders', 'excludeProviders'] as const) {
+    if (request[field] !== undefined && (!Array.isArray(request[field]) || !request[field].every((name) => typeof name === 'string' && name.trim().length > 0))) {
+      return { valid: false, error: `Invalid ${field}: expected an array of non-empty provider names` };
+    }
   }
 
   const normalizedRequest: StepperRequest<unknown, unknown> = {
@@ -287,6 +316,55 @@ function validateGenericRequest(request: unknown): { valid: true; request: Stepp
   }
 
   return { valid: true, request: normalizedRequest };
+}
+
+function validateBatchRequest(value: unknown):
+  | { valid: true; batch: StepperBatchRequest }
+  | { valid: false; error: string; errorCode?: string; supportedVersion?: string } {
+  if (isRecord(value) && value.contractVersion !== undefined && value.contractVersion !== STEPPER_HTTP_CONTRACT_VERSION) {
+    return {
+      valid: false,
+      error: 'Request contract version is not supported',
+      errorCode: 'SCHEMA_VERSION_MISMATCH',
+      supportedVersion: STEPPER_HTTP_CONTRACT_VERSION,
+    };
+  }
+
+  const envelope = validateBatchEnvelope(value, {
+    maxItems: config.batch.maxItems,
+    maxConcurrency: config.batch.maxConcurrency,
+  });
+  if (!envelope.valid) {
+    return envelope;
+  }
+
+  const items = [];
+  for (let index = 0; index < envelope.batch.items.length; index += 1) {
+    const rawItem = envelope.batch.items[index];
+    const validation = validateGenericRequest(rawItem.request);
+    if (!validation.valid) {
+      return { valid: false, error: `Invalid items[${index}].request: ${validation.error}`, errorCode: validation.errorCode, supportedVersion: validation.supportedVersion };
+    }
+
+    items.push({
+      id: rawItem.id,
+      request: {
+        ...validation.request,
+        tenantId: validation.request.tenantId || envelope.batch.tenantId,
+        requestId: validation.request.requestId || `${envelope.batch.requestId || 'batch'}:${rawItem.id}`,
+      },
+    });
+  }
+
+  return {
+    valid: true,
+    batch: {
+      tenantId: envelope.batch.tenantId,
+      requestId: envelope.batch.requestId,
+      items,
+      concurrency: envelope.batch.concurrency,
+    },
+  };
 }
 
 function extractRateLimitKey(req: Request): string | null {
@@ -348,9 +426,14 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
     return { statusCode: 404, body: { error: 'Job not found' } };
   }
 
+  const publicStatus = job.state === 'waiting' || job.state === 'delayed' || job.state === 'prioritized'
+    ? 'queued'
+    : job.state;
   const response: Record<string, unknown> = {
     id: job.id,
-    status: job.state,
+    status: publicStatus,
+    rawStatus: job.state,
+    contractVersion: STEPPER_HTTP_CONTRACT_VERSION,
   };
 
   if (job.progress !== undefined) {
@@ -358,7 +441,7 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
   }
 
   const jobData = job.data as { request?: StepperRequest<unknown, unknown>; input?: PromptInput; cacheKey?: string } | undefined;
-  const cached = job.state === 'completed' && !job.result && jobData?.cacheKey
+  const cached = (job.state === 'completed' || job.state === 'failed') && !job.result && jobData?.cacheKey
     ? await getReportCache(jobData.cacheKey)
     : null;
   const completedResult = job.result || (cached?.status === 'hydrated' ? {
@@ -366,6 +449,7 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
     usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
     providersAttempted: cached.providersAttempted || [],
     fallback: cached.fallback || false,
+    validated: cached.validated ?? !cached.fallback,
     timings: cached.timings || { totalMs: 0 },
   } : null);
 
@@ -387,6 +471,12 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
 
   if (job.state === 'failed' && job.failedReason) {
     response.error = job.failedReason;
+    const failure: JobFailure = cached?.failure || {
+      errorCode: 'UNKNOWN',
+      message: job.failedReason,
+      retryable: false,
+    };
+    response.failure = failure;
   }
 
   return { statusCode: 200, body: response };
@@ -402,7 +492,7 @@ app.post('/v1/generate', userRateLimiter, async (req: Request, res: Response, ne
   try {
     const validation = validateGenericRequest(req.body);
     if (!validation.valid) {
-      return res.status(400).json({ error: validation.error });
+      return res.status(400).json({ error: validation.error, errorCode: validation.errorCode, supportedVersion: validation.supportedVersion });
     }
 
     const result = await enqueueRequest(validation.request);
@@ -416,6 +506,8 @@ app.post('/v1/generate', userRateLimiter, async (req: Request, res: Response, ne
         metadata: {
           provider: result.usedProvider,
           fallback: result.fallback,
+          validated: result.validated,
+          contractVersion: STEPPER_HTTP_CONTRACT_VERSION,
           timings: result.timings,
         },
       });
@@ -425,6 +517,36 @@ app.post('/v1/generate', userRateLimiter, async (req: Request, res: Response, ne
       status: 'queued',
       jobId: result.jobId,
       statusUrl: `/v1/jobs/${result.jobId}`,
+      contractVersion: STEPPER_HTTP_CONTRACT_VERSION,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+/**
+ * POST /v1/generate/batch
+ * Enqueue independently identified generic requests as one bounded-concurrency job.
+ */
+app.post('/v1/generate/batch', userRateLimiter, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const validation = validateBatchRequest(req.body);
+    if (!validation.valid) {
+      return res.status(400).json({
+        error: validation.error,
+        errorCode: validation.errorCode,
+        supportedVersion: validation.supportedVersion,
+      });
+    }
+
+    const jobId = await enqueueBatchJob(validation.batch);
+    return res.status(202).json({
+      status: 'queued',
+      jobId,
+      statusUrl: `/v1/jobs/${jobId}`,
+      itemCount: validation.batch.items.length,
+      concurrency: validation.batch.concurrency,
+      contractVersion: STEPPER_HTTP_CONTRACT_VERSION,
     });
   } catch (error) {
     return next(error);
@@ -439,7 +561,7 @@ app.post('/v1/generate/immediate', userRateLimiter, async (req: Request, res: Re
   try {
     const validation = validateGenericRequest(req.body);
     if (!validation.valid) {
-      return res.status(400).json({ error: validation.error });
+      return res.status(400).json({ error: validation.error, errorCode: validation.errorCode, supportedVersion: validation.supportedVersion });
     }
 
     const result = await generateRequest(validation.request);
@@ -450,6 +572,8 @@ app.post('/v1/generate/immediate', userRateLimiter, async (req: Request, res: Re
       metadata: {
         provider: result.usedProvider,
         fallback: result.fallback,
+        validated: result.validated,
+        contractVersion: STEPPER_HTTP_CONTRACT_VERSION,
         timings: result.timings,
         providersAttempted: result.providersAttempted,
       },
@@ -484,6 +608,7 @@ app.get('/v1/providers', async (_req: Request, res: Response, next: NextFunction
       status: health.status,
       providers: health.providers,
       timestamp: health.timestamp,
+      contractVersion: STEPPER_HTTP_CONTRACT_VERSION,
     });
   } catch (error) {
     return next(error);
@@ -638,6 +763,7 @@ app.get('/', (_req: Request, res: Response) => {
     version: '1.0.0',
     endpoints: {
       'POST /v1/generate': 'Enqueue generic generation request',
+      'POST /v1/generate/batch': 'Enqueue multiple identified generic requests',
       'POST /v1/generate/immediate': 'Generate immediately (generic contract)',
       'GET /v1/jobs/:jobId': 'Get generic job status',
       'GET /v1/providers': 'Get provider health summary',

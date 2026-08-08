@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
     enqueueReport,
     enqueueRequest,
+    enqueueBatch,
     generateReport,
     generateRequest,
     deleteReport,
@@ -52,6 +53,7 @@ vi.mock('../../src/cache/redisCache.js', async () => {
 // Mock queue operations
 vi.mock('../../src/queue/producer.js', () => ({
     enqueueRequestJob: vi.fn(async () => 'mock-job-id'),
+    enqueueBatchJob: vi.fn(async () => 'mock-batch-job-id'),
     enqueueReportJob: vi.fn(async () => 'mock-job-id'),
     getJobStatus: vi.fn(async () => null),
 }));
@@ -214,6 +216,34 @@ describe('Full Report Generation Flow', () => {
             if (result.status === 202) {
                 expect(result.jobId).toBe('mock-job-id');
             }
+        });
+
+        it('should enqueue an identified batch with bounded concurrency', async () => {
+            const result = await enqueueBatch({
+                tenantId: 'tenant-123',
+                requestId: 'batch-1',
+                concurrency: 2,
+                items: [
+                    { id: 'first', request: { prompt: 'First item', responseMode: 'text' } },
+                    { id: 'second', request: { prompt: 'Second item', responseMode: 'text' } },
+                ],
+            });
+
+            expect(result).toEqual({
+                status: 202,
+                jobId: 'mock-batch-job-id',
+                itemCount: 2,
+                concurrency: 2,
+            });
+        });
+
+        it('should reject duplicate batch item IDs', async () => {
+            await expect(enqueueBatch({
+                items: [
+                    { id: 'duplicate', request: { prompt: 'First' } },
+                    { id: 'duplicate', request: { prompt: 'Second' } },
+                ],
+            })).rejects.toThrow('Batch item IDs must be unique');
         });
     });
 

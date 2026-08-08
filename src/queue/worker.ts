@@ -6,9 +6,11 @@ import {
     markFailed,
     getReportCache,
     isHydratedFresh,
+    buildRequestCacheKey,
 } from '../cache/redisCache.js';
-import { generateRequestNow } from '../stepper/orchestrator.js';
-import { StepperCallbackPayload, StepperJobData, StepperProviderResult } from '../types.js';
+import { AllProvidersFailedError, AllProvidersRateLimitedError, generateRequestNow } from '../stepper/orchestrator.js';
+import { JobFailure, ProviderErrorType, StepperBatchItemResult, StepperBatchResult, StepperCallbackPayload, StepperJobData, StepperProviderResult } from '../types.js';
+import { ProviderError } from '../providers/provider.interface.js';
 import { config } from '../config.js';
 import { logger, createChildLogger } from '../logging.js';
 import { recordJobProcessed, recordJobFailed } from '../metrics/metrics.js';
@@ -18,8 +20,40 @@ import { deliverRequestCallbacks } from '../webhooks/requestCallbacks.js';
 import { getCallbackLogOrigin } from '../security/callbackUrls.js';
 import { toCommitReportInput } from '../presets/commit-report/request.js';
 import { getQueueConnection } from './connection.js';
+import { StepperBatchQueueJobData } from './producer.js';
 
 let worker: Worker<StepperJobData<unknown, unknown>> | null = null;
+let batchWorker: Worker<StepperBatchQueueJobData> | null = null;
+
+function getFailure(error: unknown): JobFailure {
+    const message = error instanceof Error ? error.message : String(error);
+    const transientProviderErrors: ProviderErrorType[] = [
+        ProviderErrorType.RateLimit,
+        ProviderErrorType.Timeout,
+        ProviderErrorType.Unavailable,
+    ];
+    const failure: JobFailure = error instanceof AllProvidersFailedError
+        ? {
+            errorCode: error.errorCode,
+            message,
+            retryable: error.retryable,
+            providersAttempted: error.providersAttempted,
+        }
+        : {
+            errorCode: error instanceof ProviderError
+                ? error.type
+                : error instanceof AllProvidersRateLimitedError ? ProviderErrorType.RateLimit : ProviderErrorType.Unknown,
+            message,
+            retryable: error instanceof AllProvidersRateLimitedError
+                || (error instanceof ProviderError && transientProviderErrors.includes(error.type)),
+        };
+
+    if (error && typeof error === 'object' && 'retryAfterSeconds' in error && typeof error.retryAfterSeconds === 'number') {
+        failure.retryAfterSeconds = error.retryAfterSeconds;
+    }
+
+    return failure;
+}
 
 /**
  * Job processor function
@@ -57,13 +91,14 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
     try {
         // Check cache again (avoid race condition)
         const cached = await getReportCache(cacheKey);
-        if (cached && cached.status === 'hydrated' && isHydratedFresh(cached)) {
+        if (request.cacheControl !== 'no-cache' && request.cacheControl !== 'refresh' && cached && cached.status === 'hydrated' && isHydratedFresh(cached)) {
             log.info('Report already hydrated in cache, skipping generation');
             const cachedResult: StepperProviderResult<unknown> = {
                 result: cached.result,
                 usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
                 providersAttempted: cached.providersAttempted || [],
                 fallback: cached.fallback || false,
+                validated: cached.validated ?? !cached.fallback,
                 timings: cached.timings || { totalMs: 0 },
             };
             await job.updateProgress(100);
@@ -81,7 +116,7 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
             result.providersAttempted,
             result.fallback,
             undefined,
-            { usedProvider: result.usedProvider, timings: result.timings }
+            { usedProvider: result.usedProvider, timings: result.timings, validated: result.validated }
         );
 
         // Update job progress
@@ -99,8 +134,10 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
         const errorMessage = error instanceof Error ? error.message : String(error);
         log.error({ error: errorMessage }, 'Job failed');
 
-        // Mark cache as failed
-        await markFailed(cacheKey, errorMessage, []);
+        const failure = getFailure(error);
+
+        // Preserve structured failure details for the status endpoint while BullMQ retries the job.
+        await markFailed(cacheKey, errorMessage, [], failure);
 
         recordJobFailed();
 
@@ -154,6 +191,95 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
     }
 }
 
+async function processBatchItem(
+    item: { id: string; request: StepperJobData<unknown, unknown>['request'] },
+    index: number,
+    jobId: string,
+): Promise<StepperBatchItemResult> {
+    const { request } = item;
+    const cacheKey = buildRequestCacheKey(request);
+
+    try {
+        const cached = request.cacheControl === 'no-cache' || request.cacheControl === 'refresh'
+            ? null
+            : await getReportCache(cacheKey);
+
+        if (cached?.status === 'hydrated' && cached.result !== undefined && isHydratedFresh(cached)) {
+            return {
+                id: item.id,
+                index,
+                status: 'completed',
+                data: cached.result,
+                metadata: {
+                    provider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
+                    fallback: cached.fallback || false,
+                    validated: cached.validated ?? !cached.fallback,
+                    timings: cached.timings || { totalMs: 0 },
+                    providersAttempted: cached.providersAttempted || [],
+                },
+            };
+        }
+
+        const result = await generateRequestNow(request, `${jobId}:${item.id}`);
+        await setHydrated(
+            cacheKey,
+            result.result,
+            result.providersAttempted,
+            result.fallback,
+            undefined,
+            { usedProvider: result.usedProvider, timings: result.timings, validated: result.validated },
+        );
+
+        return {
+            id: item.id,
+            index,
+            status: 'completed',
+            data: result.result,
+            metadata: {
+                provider: result.usedProvider,
+                fallback: result.fallback,
+                validated: result.validated,
+                timings: result.timings,
+                providersAttempted: result.providersAttempted,
+            },
+        };
+    } catch (error) {
+        const failure = getFailure(error);
+        await markFailed(cacheKey, failure.message, failure.providersAttempted || [], failure);
+        return { id: item.id, index, status: 'failed', failure };
+    }
+}
+
+export async function processBatchJob(job: Job<StepperBatchQueueJobData>): Promise<StepperBatchResult> {
+    const { jobId, batch } = job.data;
+    const results: StepperBatchItemResult[] = new Array(batch.items.length);
+    let nextIndex = 0;
+    let completed = 0;
+    const concurrency = Math.max(1, Math.min(batch.concurrency || config.batch.maxConcurrency, config.batch.maxConcurrency));
+
+    const runNext = async (): Promise<void> => {
+        while (nextIndex < batch.items.length) {
+            const index = nextIndex++;
+            if (index >= batch.items.length) return;
+            results[index] = await processBatchItem(batch.items[index], index, jobId);
+            completed += 1;
+            // Persist progress at a bounded cadence to avoid one Redis write per
+            // item while still guaranteeing an exact final progress update.
+            if (completed % 5 === 0 || completed === batch.items.length) {
+                await job.updateProgress({ done: completed, total: batch.items.length });
+            }
+        }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, batch.items.length) }, () => runNext()));
+    return {
+        items: results,
+        total: results.length,
+        completed: results.filter((result) => result.status === 'completed').length,
+        failed: results.filter((result) => result.status === 'failed').length,
+    };
+}
+
 /**
  * Start worker
  */
@@ -191,6 +317,34 @@ export function startWorker(): void {
         }
     });
 
+    batchWorker = new Worker<StepperBatchQueueJobData>(config.batch.queueName, processBatchJob, {
+        connection: getQueueConnection(),
+        concurrency: config.batch.queueConcurrency,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 500 },
+    });
+
+    batchWorker.on('completed', (job) => {
+        logger.info({ jobId: job.id, itemCount: job.data.batch.items.length }, 'Batch job completed');
+    });
+
+    batchWorker.on('failed', (job, err) => {
+        logger.error({ jobId: job?.id, error: err.message }, 'Batch job failed at worker level');
+        if (job) {
+            void sendDiscordAlert({
+                title: 'Batch Worker Failure',
+                message: `Batch job **${job.id}** failed before returning item results.\n\n**Error:**\n\`${err.message}\``,
+                severity: 'warning',
+                metadata: {
+                    jobId: job.id,
+                    error: err.message,
+                    tenantId: job.data.batch.tenantId || 'unknown',
+                    requestId: job.data.batch.requestId,
+                },
+            });
+        }
+    });
+
     worker.on('error', (err) => {
         logger.error({ error: err }, 'Worker error');
         void sendDiscordAlert({
@@ -201,7 +355,7 @@ export function startWorker(): void {
         });
     });
 
-    logger.info({ concurrency: config.queue.concurrency }, 'Worker started');
+    logger.info({ concurrency: config.queue.concurrency, batchConcurrency: config.batch.queueConcurrency }, 'Workers started');
 }
 
 /**
@@ -212,5 +366,10 @@ export async function stopWorker(): Promise<void> {
         await worker.close();
         worker = null;
         logger.info('Worker stopped');
+    }
+    if (batchWorker) {
+        await batchWorker.close();
+        batchWorker = null;
+        logger.info('Batch worker stopped');
     }
 }

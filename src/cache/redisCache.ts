@@ -2,7 +2,7 @@
 
 import Redis from 'ioredis';
 import crypto from 'crypto';
-import { CacheEntry, ProviderAttemptMeta, StepperRequest } from '../types.js';
+import { CacheEntry, JobFailure, ProviderAttemptMeta, StepperRequest } from '../types.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
 import { sendDiscordAlert } from '../alerts/discord.js';
@@ -88,6 +88,7 @@ export function buildRequestCacheKey<TPayload = unknown, TOutput = unknown>(
         tenantId: request.tenantId || 'public',
         requestId: request.requestId || 'auto',
         responseMode: request.responseMode || 'json',
+        contractVersion: request.contractVersion || '1',
         prompt: request.prompt,
         payload: request.payload,
         outputSchema: getOutputSchemaFingerprint(request as StepperRequest<unknown, unknown>),
@@ -157,6 +158,7 @@ export async function setHydrated(
     provenance?: {
         usedProvider: string;
         timings: { totalMs: number; providerMs?: number };
+        validated?: boolean;
     }
 ): Promise<void> {
     const redis = getRedisClient();
@@ -168,6 +170,7 @@ export async function setHydrated(
         fallback,
         usedProvider: provenance?.usedProvider,
         timings: provenance?.timings,
+        validated: provenance?.validated,
         timestamps: {
             created: new Date().toISOString(),
             updated: new Date().toISOString(),
@@ -187,13 +190,19 @@ export async function setHydrated(
 /**
  * Mark cache entry as failed: Records that report generation failed completely. All AI providers were tried and none worked.
  */
-export async function markFailed(key: string, errorMessage: string, providersAttempted: ProviderAttemptMeta[]): Promise<void> {
+export async function markFailed(
+    key: string,
+    errorMessage: string,
+    providersAttempted: ProviderAttemptMeta[],
+    failure?: JobFailure
+): Promise<void> {
     const redis = getRedisClient();
 
     const entry: CacheEntry = {
         status: 'failed',
         error: errorMessage,
         providersAttempted,
+        failure,
         timestamps: {
             created: new Date().toISOString(),
             updated: new Date().toISOString(),

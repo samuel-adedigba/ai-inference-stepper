@@ -1,9 +1,14 @@
-import { StepperConfig, ProviderConfig } from './types.js';
+import { StepperConfig, StepperConfigOverrides, ProviderConfig } from './types.js';
 
 /**
  * Load configuration from environment variables with sensible defaults.
  * This is the central brain for all timing, retry, and safety-switch logic.
  */
+
+function positiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 /**
  * Load provider configurations from environment
@@ -57,6 +62,12 @@ function loadProviderConfigs(): ProviderConfig[] {
 }
 export function loadConfig(): StepperConfig {
   const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+  const queueName = process.env.QUEUE_NAME || 'report-generation';
+  const batchQueueName = process.env.BATCH_QUEUE_NAME || 'inference-batch-generation';
+
+  if (queueName === batchQueueName) {
+    throw new Error('QUEUE_NAME and BATCH_QUEUE_NAME must be different to preserve single/batch isolation');
+  }
 
   // Provider configurations: Rules for how we talk to each AI
   const providers: ProviderConfig[] = [
@@ -158,9 +169,15 @@ export function loadConfig(): StepperConfig {
       enableStaleWhileRevalidate: process.env.CACHE_STALE_WHILE_REVALIDATE !== 'false',
     },
     queue: {
-      name: process.env.QUEUE_NAME || 'report-generation',
+      name: queueName,
       // How many total background jobs we run across all providers
-      concurrency: parseInt(process.env.QUEUE_CONCURRENCY || '5', 10),
+      concurrency: positiveInteger(process.env.QUEUE_CONCURRENCY, 5),
+    },
+    batch: {
+      queueName: batchQueueName,
+      queueConcurrency: positiveInteger(process.env.BATCH_QUEUE_CONCURRENCY, 2),
+      maxItems: positiveInteger(process.env.BATCH_MAX_ITEMS, 100),
+      maxConcurrency: positiveInteger(process.env.BATCH_MAX_CONCURRENCY, 5),
     },
     webhook: {
       enabled: process.env.WEBHOOK_ENABLED !== 'false', // Enabled by default
@@ -227,7 +244,9 @@ export function loadConfig(): StepperConfig {
   };
 }
 
-function mergeConfig(base: StepperConfig, overrides: Partial<StepperConfig>): StepperConfig {
+function mergeConfig(base: StepperConfig, overrides: StepperConfigOverrides<StepperConfig>): StepperConfig {
+  // `base` supplies every nested default; the assertion keeps the public
+  // deep-partial override type ergonomic without weakening the runtime shape.
   return {
     ...base,
     ...overrides,
@@ -244,6 +263,10 @@ function mergeConfig(base: StepperConfig, overrides: Partial<StepperConfig>): St
     queue: {
       ...base.queue,
       ...overrides.queue,
+    },
+    batch: {
+      ...base.batch,
+      ...overrides.batch,
     },
     webhook: {
       ...base.webhook,
@@ -281,10 +304,10 @@ function mergeConfig(base: StepperConfig, overrides: Partial<StepperConfig>): St
       ...base.server,
       ...overrides.server,
     },
-  };
+  } as StepperConfig;
 }
 
-export function createConfig(overrides?: Partial<StepperConfig>): StepperConfig {
+export function createConfig(overrides?: StepperConfigOverrides<StepperConfig>): StepperConfig {
   const base = loadConfig();
   if (!overrides) {
     return base;
@@ -294,7 +317,7 @@ export function createConfig(overrides?: Partial<StepperConfig>): StepperConfig 
 
 export let config = loadConfig();
 
-export function applyConfigOverrides(overrides?: Partial<StepperConfig>): StepperConfig {
+export function applyConfigOverrides(overrides?: StepperConfigOverrides<StepperConfig>): StepperConfig {
   if (!overrides) {
     return config;
   }

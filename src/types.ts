@@ -24,6 +24,8 @@ export interface WebhookCallback {
  * Generic response mode for non-preset Stepper requests.
  */
 export type StepperResponseMode = 'json' | 'text';
+export type StepperCacheControl = 'default' | 'no-cache' | 'refresh';
+export const STEPPER_HTTP_CONTRACT_VERSION = '1';
 
 /**
  * Generic prompt builder input.
@@ -83,9 +85,50 @@ export interface StepperRequest<TPayload = unknown, TOutput = unknown> {
   payload?: TPayload;
   outputSchema?: StepperOutputSchema<TOutput>;
   responseMode?: StepperResponseMode;
+  contractVersion?: string;
+  cacheControl?: StepperCacheControl;
+  /** Provider names to try first, in the order supplied. */
+  preferredProviders?: string[];
+  /** Provider names to skip for this request. */
+  excludeProviders?: string[];
   providers?: ProviderConfig[];
   callbacks?: WebhookCallback[];
   metadata?: Record<string, unknown>;
+}
+
+/** One independently identified request inside a batch. */
+export interface StepperBatchItem<TPayload = unknown, TOutput = unknown> {
+  id: string;
+  request: StepperRequest<TPayload, TOutput>;
+}
+
+export interface StepperBatchRequest {
+  tenantId?: string;
+  requestId?: string;
+  items: StepperBatchItem[];
+  concurrency?: number;
+}
+
+export interface StepperBatchItemResult {
+  id: string;
+  index: number;
+  status: 'completed' | 'failed';
+  data?: unknown;
+  failure?: JobFailure;
+  metadata?: {
+    provider?: string;
+    fallback?: boolean;
+    validated?: boolean;
+    timings?: { totalMs: number; providerMs?: number };
+    providersAttempted?: ProviderAttemptMeta[];
+  };
+}
+
+export interface StepperBatchResult {
+  items: StepperBatchItemResult[];
+  total: number;
+  completed: number;
+  failed: number;
 }
 
 /**
@@ -141,6 +184,7 @@ export interface StepperProviderResult<TOutput = unknown> {
   usedProvider: string;
   providersAttempted: ProviderAttemptMeta[];
   fallback: boolean;
+  validated: boolean;
   timings: {
     totalMs: number;
     providerMs?: number;
@@ -196,7 +240,18 @@ export interface CacheEntry {
     totalMs: number;
     providerMs?: number;
   };
+  validated?: boolean;
   error?: string;
+  failure?: JobFailure;
+}
+
+/** Stable failure details exposed by the HTTP job-status contract. */
+export interface JobFailure {
+  errorCode: string;
+  message: string;
+  retryable: boolean;
+  retryAfterSeconds?: number;
+  providersAttempted?: ProviderAttemptMeta[];
 }
 
 /**
@@ -226,9 +281,9 @@ export interface ReportJobData {
  */
 export enum ProviderErrorType {
   RateLimit = 'RATE_LIMIT',
-  Auth = 'AUTH_ERROR',
+  Auth = 'AUTH',
   Timeout = 'TIMEOUT',
-  Unavailable = 'UNAVAILABLE',
+  Unavailable = 'UPSTREAM_UNAVAILABLE',
   InvalidResponse = 'INVALID_RESPONSE',
   Unknown = 'UNKNOWN',
 }
@@ -306,6 +361,8 @@ export interface ProviderConfig {
   rateLimitRPS?: number; // Requests Per Second
   concurrency: number;
   timeout?: number;
+  supportsBatch?: boolean;
+  maxTokens?: number;
 }
 
 /**
@@ -334,6 +391,12 @@ export interface StepperConfig {
   queue: {
     name: string;
     concurrency: number;
+  };
+  batch: {
+    queueName: string;
+    queueConcurrency: number;
+    maxItems: number;
+    maxConcurrency: number;
   };
   webhook: {
     enabled: boolean;
@@ -389,3 +452,14 @@ export interface StepperConfig {
     metricsPort?: number;
   };
 }
+
+/**
+ * Public configuration overrides are deep-partial so adding a new runtime
+ * setting does not break integrations that only override an existing sibling.
+ * Arrays remain atomic values rather than becoming partially typed objects.
+ */
+export type StepperConfigOverrides<T> = T extends readonly unknown[]
+  ? T
+  : T extends object
+    ? { [K in keyof T]?: StepperConfigOverrides<T[K]> }
+    : T;

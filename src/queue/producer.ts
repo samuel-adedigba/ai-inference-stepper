@@ -2,20 +2,27 @@
 
 import { Queue } from 'bullmq';
 import { v4 as uuidv4 } from 'uuid';
-import { PromptInput, StepperJobData, StepperRequest } from '../types.js';
+import { PromptInput, StepperBatchRequest, StepperJobData, StepperRequest } from '../types.js';
 import { config } from '../config.js';
 import { logger } from '../logging.js';
 import { createCommitReportRequest } from '../presets/commit-report/request.js';
 import { getQueueConnection } from './connection.js';
 
-let queue: Queue<StepperJobData<unknown, unknown>> | null = null;
+export type StepperQueueJobData = StepperJobData<unknown, unknown>;
+export type StepperBatchQueueJobData = {
+    jobId: string;
+    batch: StepperBatchRequest;
+};
+
+let queue: Queue<StepperQueueJobData> | null = null;
+let batchQueue: Queue<StepperBatchQueueJobData> | null = null;
 
 /**
  * Get or create BullMQ queue
  */
-export function getQueue(): Queue<StepperJobData<unknown, unknown>> {
+export function getQueue(): Queue<StepperQueueJobData> {
     if (!queue) {
-        queue = new Queue<StepperJobData<unknown, unknown>>(config.queue.name, {
+        queue = new Queue<StepperQueueJobData>(config.queue.name, {
             connection: getQueueConnection(),
         });
 
@@ -23,6 +30,35 @@ export function getQueue(): Queue<StepperJobData<unknown, unknown>> {
     }
 
     return queue;
+}
+
+export function getBatchQueue(): Queue<StepperBatchQueueJobData> {
+    if (!batchQueue) {
+        batchQueue = new Queue<StepperBatchQueueJobData>(config.batch.queueName, {
+            connection: getQueueConnection(),
+        });
+        logger.info({ queueName: config.batch.queueName }, 'Batch queue initialized');
+    }
+
+    return batchQueue;
+}
+
+/** Enqueue one batch job. Items are processed independently by the worker. */
+export async function enqueueBatchJob(batch: StepperBatchRequest): Promise<string> {
+    const jobId = uuidv4();
+    const queue = getBatchQueue();
+
+    await queue.add('generate-batch', { jobId, batch }, {
+        jobId,
+        removeOnComplete: 100,
+        removeOnFail: 500,
+        // Item failures are returned in the batch result. Retrying the whole batch
+        // would repeat successful items and create unnecessary provider traffic.
+        attempts: 1,
+    });
+
+    logger.info({ jobId, itemCount: batch.items.length }, 'Batch job enqueued');
+    return jobId;
 }
 
 /**
@@ -83,15 +119,13 @@ export async function enqueueReportJob(
 export async function getJobStatus(jobId: string): Promise<{
     id: string;
     state: string;
-    progress?: number;
+    progress?: unknown;
     result?: unknown;
     failedReason?: string;
     data?: unknown;
 } | null> {
-    const queue = getQueue();
-
     try {
-        const job = await queue.getJob(jobId);
+        const job = await getQueue().getJob(jobId) || await getBatchQueue().getJob(jobId);
         if (!job) return null;
 
         const state = await job.getState();
@@ -117,5 +151,10 @@ export async function closeQueue(): Promise<void> {
         await queue.close();
         queue = null;
         logger.info('Queue closed');
+    }
+    if (batchQueue) {
+        await batchQueue.close();
+        batchQueue = null;
+        logger.info('Batch queue closed');
     }
 }

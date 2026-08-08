@@ -6,9 +6,11 @@ import {
     ProviderResult,
     StepperCallbacks,
     StepperConfig,
+    StepperConfigOverrides,
     ProviderConfig,
     StepperRequest,
     StepperProviderResult,
+    StepperBatchRequest,
 } from './types.js';
 import { logger } from './logging.js';
 import {
@@ -19,13 +21,14 @@ import {
     isStaleButUsable,
     deleteCacheEntry,
 } from './cache/redisCache.js';
-import { enqueueRequestJob, getJobStatus } from './queue/producer.js';
+import { enqueueBatchJob, enqueueRequestJob, getJobStatus } from './queue/producer.js';
 import { generateReportNow, generateRequestNow, registerCallbacks as registerOrchestratorCallbacks, initializeProviders, getProviderHealth } from './stepper/orchestrator.js';
 import { recordCacheHit, recordCacheMiss } from './metrics/metrics.js';
-import { applyConfigOverrides } from './config.js';
+import { applyConfigOverrides, config } from './config.js';
 import { createCommitReportRequest, toCommitReportInput } from './presets/commit-report/request.js';
 import { buildCommitReportCacheKey, buildCommitReportCacheKeyFromParts } from './presets/commit-report/cacheKey.js';
 import { LEGACY_COMMIT_REPORT_API_DEPRECATION } from './deprecations.js';
+import { validateBatchEnvelope } from './validation/batch.js';
 
 let isInitialized = false;
 const emittedLegacyApiWarnings = new Set<string>();
@@ -62,8 +65,8 @@ function ensureInitialized(): void {
  * Initialize Stepper with optional config overrides.
  * Useful for npm consumers who want programmatic config instead of env.
  */
-export function initStepper(options?: { config?: Partial<StepperConfig>; providers?: ProviderConfig[] }): StepperConfig {
-    const overrides: Partial<StepperConfig> = options?.config ? { ...options.config } : {};
+export function initStepper(options?: { config?: StepperConfigOverrides<StepperConfig>; providers?: ProviderConfig[] }): StepperConfig {
+    const overrides: StepperConfigOverrides<StepperConfig> = options?.config ? { ...options.config } : {};
     if (options?.providers) {
         overrides.providers = options.providers;
     }
@@ -100,6 +103,7 @@ type EnqueueResult<TOutput> =
         stale?: boolean;
         usedProvider: string;
         fallback: boolean;
+        validated: boolean;
         timings: { totalMs: number; providerMs?: number };
       }
     | { status: 202; jobId: string; cached: false };
@@ -126,7 +130,9 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
 ): Promise<EnqueueResult<TOutput>> {
     ensureInitialized();
 
-    const cached = await getReportCache(cacheKey);
+    const cached = request.cacheControl === 'no-cache' || request.cacheControl === 'refresh'
+        ? null
+        : await getReportCache(cacheKey);
     if (cached && cached.status === 'hydrated' && cached.result !== undefined) {
         const fresh = isHydratedFresh(cached);
 
@@ -144,6 +150,7 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
                 cached: true,
                 usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
                 fallback: cached.fallback || false,
+                validated: cached.validated ?? !cached.fallback,
                 timings: cached.timings || { totalMs: 0 },
             };
         }
@@ -163,6 +170,7 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
                 stale: true,
                 usedProvider: cached.usedProvider || (cached.fallback ? 'fallback' : 'cache'),
                 fallback: cached.fallback || false,
+                validated: cached.validated ?? !cached.fallback,
                 timings: cached.timings || { totalMs: 0 },
             };
         }
@@ -217,6 +225,51 @@ export async function enqueueRequest<TPayload = unknown, TOutput = unknown>(
         requestId: request.requestId,
         tenantId: request.tenantId,
     });
+}
+
+/**
+ * Enqueue independently identified generic requests as one bounded-concurrency job.
+ * Results retain the input order and item IDs.
+ */
+export async function enqueueBatch(batch: StepperBatchRequest): Promise<{
+    status: 202;
+    jobId: string;
+    itemCount: number;
+    concurrency: number;
+}> {
+    const envelope = validateBatchEnvelope(batch, {
+        maxItems: config.batch.maxItems,
+        maxConcurrency: config.batch.maxConcurrency,
+    });
+    if (!envelope.valid) {
+        throw new Error(envelope.error);
+    }
+
+    const items = envelope.batch.items.map((item) => {
+        if (!('prompt' in item.request)) {
+            throw new Error(`Invalid items[].request for '${item.id}': missing required field: prompt`);
+        }
+
+        return {
+            id: item.id,
+            request: {
+                ...(item.request as unknown as StepperRequest<unknown, unknown>),
+                tenantId: (item.request.tenantId as string | undefined) || envelope.batch.tenantId,
+                requestId: (item.request.requestId as string | undefined)
+                    || `${envelope.batch.requestId || 'batch'}:${item.id}`,
+            },
+        };
+    });
+    const concurrency = envelope.batch.concurrency;
+
+    ensureInitialized();
+    const jobId = await enqueueBatchJob({
+        tenantId: envelope.batch.tenantId,
+        requestId: envelope.batch.requestId,
+        items,
+        concurrency,
+    });
+    return { status: 202, jobId, itemCount: items.length, concurrency };
 }
 
 /**
@@ -330,7 +383,7 @@ export async function generateReport(input: PromptInput): Promise<ProviderResult
 export async function getJob(jobId: string): Promise<{
     id: string;
     state: string;
-    progress?: number;
+    progress?: unknown;
     result?: unknown;
     failedReason?: string;
     data?: unknown;
@@ -366,7 +419,16 @@ export async function deleteReport(userId: string, commitSha: string, template?:
  */
 export async function healthcheck(): Promise<{
     status: 'healthy' | 'degraded' | 'unhealthy';
-    providers: Array<{ name: string; healthy: boolean }>;
+    providers: Array<{
+        name: string;
+        healthy: boolean;
+        circuitOpen: boolean;
+        retryAfterSeconds: number;
+        lastChecked: string;
+        inferredFrom: 'circuit_breaker';
+        supportsBatch: false;
+        maxTokens: number | null;
+    }>;
     timestamp: string;
 }> {
     ensureInitialized();
@@ -384,7 +446,7 @@ export async function healthcheck(): Promise<{
 
     return {
         status,
-        providers: providerHealth.map((p) => ({ name: p.name, healthy: p.healthy })),
+        providers: providerHealth,
         timestamp: new Date().toISOString(),
     };
 }

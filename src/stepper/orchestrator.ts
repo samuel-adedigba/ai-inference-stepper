@@ -69,6 +69,35 @@ export class AllProvidersRateLimitedError extends Error {
 }
 
 /**
+ * Preserves provider failure provenance when fallback is disabled.
+ * Queue workers use this to retry transient upstream failures without retrying
+ * permanent configuration or validation failures.
+ */
+export class AllProvidersFailedError extends Error {
+  public readonly errorCode: string;
+  public readonly retryable: boolean;
+
+  constructor(public readonly providersAttempted: ProviderAttemptMeta[]) {
+    const errorCodes = providersAttempted
+      .map((attempt) => attempt.errorCode)
+      .filter((code): code is string => Boolean(code));
+    const hasTransientFailure = errorCodes.some((code) => [
+      ProviderErrorType.RateLimit,
+      ProviderErrorType.Timeout,
+      ProviderErrorType.Unavailable,
+    ].includes(code as ProviderErrorType));
+    const circuitWasOpen = providersAttempted.some((attempt) => attempt.skipped === 'circuit_open');
+
+    super(`All ${providersAttempted.length} provider(s) failed. Job will retry.`);
+    this.name = 'AllProvidersFailedError';
+    this.errorCode = errorCodes.length > 0 && errorCodes.every((code) => code === errorCodes[0])
+      ? errorCodes[0]
+      : hasTransientFailure ? ProviderErrorType.Unavailable : ProviderErrorType.Unknown;
+    this.retryable = hasTransientFailure || circuitWasOpen;
+  }
+}
+
+/**
  * Initialize providers with rate limiters and circuit breakers.
  */
 export function initializeProviders(providerConfigs: ProviderConfig[] = config.providers): void {
@@ -159,6 +188,25 @@ function getRequestMetricsContext(request: StepperRequest<unknown, unknown>): Me
   const preset = isCommitReportRequest(request) ? 'commit-report' : 'generic';
   const responseMode = request.responseMode === 'text' ? 'text' : 'json';
   return { preset, responseMode };
+}
+
+function getProvidersForRequest(request: StepperRequest<unknown, unknown>): ProviderWithLimiter[] {
+  const excluded = new Set((request.excludeProviders || []).map((name) => name.toLowerCase()));
+  const available = providers.filter((provider) => !excluded.has(provider.config.name.toLowerCase()));
+
+  if (!request.preferredProviders || request.preferredProviders.length === 0) {
+    return available;
+  }
+
+  const preferred = new Map(request.preferredProviders.map((name, index) => [name.toLowerCase(), index]));
+  return [...available].sort((left, right) => {
+    const leftRank = preferred.get(left.config.name.toLowerCase());
+    const rightRank = preferred.get(right.config.name.toLowerCase());
+    if (leftRank === undefined && rightRank === undefined) return 0;
+    if (leftRank === undefined) return 1;
+    if (rightRank === undefined) return -1;
+    return leftRank - rightRank;
+  });
 }
 
 function buildCallbackMetadata(
@@ -288,7 +336,7 @@ export async function generateRequestNow<TOutput = unknown>(
     initializeProviders();
   }
 
-  for (const provider of providers) {
+  for (const provider of getProvidersForRequest(runtimeRequest)) {
     const providerName = provider.config.name;
 
     if (provider.circuit.opened) {
@@ -358,6 +406,7 @@ export async function generateRequestNow<TOutput = unknown>(
         usedProvider: providerName,
         providersAttempted,
         fallback: false,
+        validated: true,
         timings: { totalMs, providerMs: durationMs },
       };
     } catch (error) {
@@ -416,7 +465,7 @@ export async function generateRequestNow<TOutput = unknown>(
     await invokeCallback('onFailure', jobId, failedAttempts, {
       lastError: failedAttempts[failedAttempts.length - 1]?.error,
     });
-    throw new Error(`All ${providersAttempted.length} provider(s) failed. Job will retry.`);
+    throw new AllProvidersFailedError(providersAttempted);
   }
 
   const fallbackResult = commitInput
@@ -430,6 +479,7 @@ export async function generateRequestNow<TOutput = unknown>(
     usedProvider: 'fallback',
     providersAttempted,
     fallback: true,
+    validated: false,
     timings: { totalMs },
   };
 }
@@ -446,10 +496,25 @@ export async function generateReportNow(input: PromptInput, jobId: string = 'imm
 /**
  * Get provider health status.
  */
-export function getProviderHealth(): Array<{ name: string; circuitOpen: boolean; healthy: boolean }> {
+export function getProviderHealth(): Array<{
+  name: string;
+  circuitOpen: boolean;
+  healthy: boolean;
+  retryAfterSeconds: number;
+  lastChecked: string;
+  inferredFrom: 'circuit_breaker';
+  supportsBatch: false;
+  maxTokens: number | null;
+}> {
+  const lastChecked = new Date().toISOString();
   return providers.map((p) => ({
     name: p.config.name,
     circuitOpen: p.circuit.opened,
     healthy: !p.circuit.opened,
+    retryAfterSeconds: p.circuit.opened ? Math.ceil(config.circuit.cooldownSeconds) : 0,
+    lastChecked,
+    inferredFrom: 'circuit_breaker' as const,
+    supportsBatch: false as const,
+    maxTokens: p.config.maxTokens ?? null,
   }));
 }

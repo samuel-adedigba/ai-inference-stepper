@@ -7,12 +7,13 @@ import { logger } from '../logging.js';
 import { startWorker, stopWorker } from '../queue/worker.js';
 import { closeRedis } from '../cache/redisCache.js';
 import { closeQueue } from '../queue/producer.js';
-import type { ProviderConfig, StepperConfig } from '../types.js';
+import { closeRateLimitRedis } from './redisRateLimitStore.js';
+import type { ProviderConfig, StepperConfig, StepperConfigOverrides } from '../types.js';
 
 export interface StartServerOptions {
   port?: number;
   init?: {
-    config?: Partial<StepperConfig>;
+    config?: StepperConfigOverrides<StepperConfig>;
     providers?: ProviderConfig[];
   };
 }
@@ -57,6 +58,7 @@ export async function startServer(options?: StartServerOptions): Promise<Running
         await stopWorker();
         await closeQueue();
         await closeRedis();
+        await closeRateLimitRedis();
         logger.info('Shutdown complete');
         resolve();
       });

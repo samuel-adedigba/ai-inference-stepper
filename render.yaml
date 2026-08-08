@@ -2,7 +2,8 @@ services:
   - type: web
     name: commitdiary-stepper
     env: node
-    rootDir: packages/stepper
+    # This Blueprint is deployed from the standalone ai-inference-stepper repository.
+    rootDir: .
     plan: free
     region: frankfurt
     buildCommand: pnpm install && pnpm build

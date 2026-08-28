@@ -7,8 +7,7 @@ afterEach(() => {
 
 describe('legacy report callback metadata', () => {
   it('delivers provider, timing, and fallback provenance with the report', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal('fetch', fetchMock);
+    const axiosMock = vi.fn().mockResolvedValue({ status: 204, data: null, headers: {} });
 
     await notifyWebhookSuccess(
       'https://api.example.com/v1/webhooks/report-completed',
@@ -16,10 +15,11 @@ describe('legacy report callback metadata', () => {
       'job-1',
       { title: 'Generated report' },
       { provider: 'gemini', generationTimeMs: 912, fallback: false },
+      axiosMock,
     );
 
-    const request = fetchMock.mock.calls[0][1];
-    const payload = JSON.parse(request.body);
+    const request = axiosMock.mock.calls[0][0];
+    const payload = JSON.parse(request.data);
     expect(payload.provider).toBe('gemini');
     expect(payload.generationTimeMs).toBe(912);
     expect(payload.fallback).toBe(false);

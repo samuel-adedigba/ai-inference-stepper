@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { logger } from '../../logging.js';
 import crypto from 'crypto';
+import axios from 'axios';
 
 interface CommitReportCompletionPayload {
   jobId: string;
@@ -95,24 +96,29 @@ export async function handleCommitReportWebhook(req: Request, res: Response, nex
           throw new Error('Webhook secret not configured');
         }
 
-        const updateResponse = await fetch(`${apiUrl}/v1/internal/update-commit-status`, {
+        const updateResponse = await axios({
+          url: `${apiUrl}/v1/internal/update-commit-status`,
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`,
             'X-Internal-Request': 'stepper-webhook'
           },
-          body: JSON.stringify({
+          data: {
             commitId: reportPayload.commitId,
             repoId: reportPayload.repoId,
             status: 'completed',
             jobId: reportPayload.jobId,
             result: reportPayload.result
-          })
+          },
+          timeout: 10_000,
+          validateStatus: () => true,
         });
 
-        if (!updateResponse.ok) {
-          const errorText = await updateResponse.text();
+        if (updateResponse.status < 200 || updateResponse.status >= 300) {
+          const errorText = typeof updateResponse.data === 'string'
+            ? updateResponse.data
+            : JSON.stringify(updateResponse.data) || 'Unable to read response';
           logger.error({
             jobId: reportPayload.jobId,
             status: updateResponse.status,

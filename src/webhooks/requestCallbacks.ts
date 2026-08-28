@@ -1,4 +1,5 @@
 import { logger, createChildLogger } from '../logging.js';
+import axios from 'axios';
 import { StepperCallbackPayload, WebhookCallback } from '../types.js';
 import { getCallbackLogOrigin, isAllowedCallbackUrl } from '../security/callbackUrls.js';
 
@@ -9,6 +10,8 @@ export interface CallbackDeliveryResult {
   error?: string;
 }
 
+type CallbackDeliveryOptions = { jobId?: string; axiosImpl?: typeof axios };
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -16,7 +19,7 @@ function sleep(ms: number): Promise<void> {
 async function deliverSingleCallback(
   callback: WebhookCallback,
   payload: StepperCallbackPayload<unknown>,
-  jobId?: string
+  options: CallbackDeliveryOptions = {}
 ): Promise<CallbackDeliveryResult> {
   if (!isAllowedCallbackUrl(callback.url)) {
     return {
@@ -29,11 +32,12 @@ async function deliverSingleCallback(
   const maxAttempts = callback.retry?.maxAttempts ?? 3;
   const backoffMs = callback.retry?.backoffMs ?? 1000;
   const callbackOrigin = getCallbackLogOrigin(callback.url);
-  const log = createChildLogger({ jobId, callbackOrigin });
+  const log = createChildLogger({ jobId: options.jobId, callbackOrigin });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await fetch(callback.url, {
+      const response = await (options.axiosImpl ?? axios)({
+        url: callback.url,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -41,11 +45,12 @@ async function deliverSingleCallback(
           'X-Stepper-Timestamp': Date.now().toString(),
           ...callback.headers,
         },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10000),
+        data: payload,
+        timeout: 10_000,
+        validateStatus: () => true,
       });
 
-      if (response.ok) {
+      if (response.status >= 200 && response.status < 300) {
         log.info({ attempt, statusCode: response.status }, 'Callback delivered');
         return { url: callback.url, success: true, statusCode: response.status };
       }
@@ -91,12 +96,12 @@ async function deliverSingleCallback(
 export async function deliverRequestCallbacks(
   callbacks: WebhookCallback[],
   payload: StepperCallbackPayload<unknown>,
-  options: { jobId?: string } = {}
+  options: CallbackDeliveryOptions = {}
 ): Promise<CallbackDeliveryResult[]> {
   const results: CallbackDeliveryResult[] = [];
 
   for (const callback of callbacks) {
-    const result = await deliverSingleCallback(callback, payload, options.jobId);
+    const result = await deliverSingleCallback(callback, payload, options);
     results.push(result);
 
     if (!result.success && !callback.continueOnFailure) {

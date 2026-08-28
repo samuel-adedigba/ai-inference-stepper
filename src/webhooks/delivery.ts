@@ -1,6 +1,7 @@
 // packages/stepper/src/webhooks/delivery.ts
 
 import crypto from 'crypto';
+import axios from 'axios';
 import { logger, createChildLogger } from '../logging.js';
 import { getCallbackLogOrigin, isAllowedCallbackUrl } from '../security/callbackUrls.js';
 
@@ -20,6 +21,7 @@ export interface WebhookConfig {
     secret: string;
     maxRetries?: number;
     retryDelayMs?: number;
+    axiosImpl?: typeof axios;
 }
 
 /**
@@ -56,7 +58,8 @@ export async function sendWebhook(
 
         log.info({ callbackOrigin: getCallbackLogOrigin(config.url), attempt, maxRetries }, 'Sending webhook');
 
-        const response = await fetch(config.url, {
+        const response = await (config.axiosImpl ?? axios)({
+            url: config.url,
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -65,17 +68,20 @@ export async function sendWebhook(
                 'X-Webhook-Timestamp': payload.timestamp.toString(),
                 'User-Agent': 'Stepper/1.0'
             },
-            body: payloadString,
-            signal: AbortSignal.timeout(10000) // 10s timeout
+            data: payloadString,
+            timeout: 10_000,
+            validateStatus: () => true,
         });
 
-        if (response.ok) {
+        if (response.status >= 200 && response.status < 300) {
             log.info({ statusCode: response.status }, 'Webhook delivered successfully');
             return { success: true, statusCode: response.status };
         }
 
         // Non-OK response
-        const errorBody = await response.text().catch(() => 'Unable to read response');
+        const errorBody = typeof response.data === 'string'
+            ? response.data
+            : JSON.stringify(response.data) || 'Unable to read response';
         log.warn({ statusCode: response.status, errorBody }, 'Webhook delivery failed with non-OK status');
 
         // Retry on 5xx errors or specific 4xx errors
@@ -119,7 +125,8 @@ export async function notifyWebhookSuccess(
     webhookSecret: string,
     jobId: string,
     result: unknown,
-    metadata: { provider?: string; generationTimeMs?: number; fallback?: boolean } = {}
+    metadata: { provider?: string; generationTimeMs?: number; fallback?: boolean } = {},
+    axiosImpl: typeof axios = axios,
 ): Promise<void> {
     const payload: WebhookPayload = {
         jobId,
@@ -132,7 +139,7 @@ export async function notifyWebhookSuccess(
     };
 
     const webhookResult = await sendWebhook(
-        { url: webhookUrl, secret: webhookSecret },
+        { url: webhookUrl, secret: webhookSecret, axiosImpl },
         payload
     );
 
@@ -151,7 +158,8 @@ export async function notifyWebhookFailure(
     webhookUrl: string,
     webhookSecret: string,
     jobId: string,
-    error: string
+    error: string,
+    axiosImpl: typeof axios = axios,
 ): Promise<void> {
     const payload: WebhookPayload = {
         jobId,
@@ -161,7 +169,7 @@ export async function notifyWebhookFailure(
     };
 
     const webhookResult = await sendWebhook(
-        { url: webhookUrl, secret: webhookSecret },
+        { url: webhookUrl, secret: webhookSecret, axiosImpl },
         payload
     );
 

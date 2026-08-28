@@ -1,6 +1,7 @@
 // `packages/stepper/src/alerts/discord.ts
 
 import { logger } from '../logging.js';
+import axios from 'axios';
 
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL;
 
@@ -42,13 +43,16 @@ export async function sendDiscordAlert(alert: DiscordAlert): Promise<void> {
         : { content };
 
     try {
-        const response = await fetch(DISCORD_WEBHOOK_URL, {
+        const response = await axios({
+            url: DISCORD_WEBHOOK_URL,
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(embed),
+            data: embed,
+            timeout: 10_000,
+            validateStatus: () => true,
         });
 
-        if (!response.ok) {
+        if (response.status < 200 || response.status >= 300) {
             logger.warn({ status: response.status }, 'Discord webhook request failed');
         }
     } catch (error) {

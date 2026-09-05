@@ -37,7 +37,7 @@ vi.mock('../../../src/stepper/orchestrator.js', () => ({
 
 function createBatchJob(batch: StepperBatchRequest) {
     return {
-        data: { jobId: 'batch-job-1', batch },
+        data: { jobId: 'batch-job-1', batch, ownerKey: 'owner-a' },
         updateProgress: vi.fn().mockResolvedValue(undefined),
     } as unknown as Parameters<typeof processBatchJob>[0];
 }
@@ -100,6 +100,7 @@ describe('batch worker', () => {
         expect(result.failed).toBe(0);
         expect(job.updateProgress).toHaveBeenLastCalledWith({ done: 6, total: 6 });
         expect(job.updateProgress).toHaveBeenCalledTimes(2);
+        expect(mocks.buildRequestCacheKey).toHaveBeenCalledWith(expect.any(Object), 'owner-a');
     });
 
     it('returns transient item failures with retryable error provenance', async () => {

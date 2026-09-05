@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import RedisMock from 'ioredis-mock';
-import { getReportCache, setDehydrated, setHydrated, isHydratedFresh, buildRequestCacheKey, closeRedis } from '../../src/cache/redisCache.js';
+import { getReportCache, setDehydrated, setHydrated, isHydratedFresh, buildRequestCacheKey, scopeCacheKeyToOwner, closeRedis } from '../../src/cache/redisCache.js';
 import { buildCommitReportCacheKey } from '../../src/presets/commit-report/cacheKey.js';
 
 vi.mock('ioredis', () => ({ default: RedisMock }));
@@ -33,6 +33,27 @@ describe('Cache', () => {
         expect(key).toContain('tenant-1');
         expect(key).toContain('req-1');
         expect(key).toBe(key2);
+    });
+
+    it('isolates caller-provided cache keys by authenticated owner', () => {
+        const request = { prompt: 'Hello', cacheKey: 'shared-key' };
+
+        const ownerA = buildRequestCacheKey(request, 'owner-a');
+        const ownerB = buildRequestCacheKey(request, 'owner-b');
+
+        expect(ownerA).not.toBe(ownerB);
+        expect(ownerA).not.toContain('owner-a');
+        expect(ownerB).not.toContain('owner-b');
+    });
+
+    it('scopes compatibility keys per owner without leaking key material', () => {
+        const scopedA = scopeCacheKeyToOwner('stepper:report:user-1:abc', 'owner-a');
+        const scopedB = scopeCacheKeyToOwner('stepper:report:user-1:abc', 'owner-b');
+
+        expect(scopedA).not.toBe(scopedB);
+        expect(scopedA).not.toContain('owner-a');
+        expect(scopedA).not.toContain('user-1');
+        expect(scopeCacheKeyToOwner('stepper:report:user-1:abc')).toBe('stepper:report:user-1:abc');
     });
 
     it('should build commit compatibility cache key correctly', () => {

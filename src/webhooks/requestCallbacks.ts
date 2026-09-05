@@ -29,14 +29,14 @@ async function deliverSingleCallback(
     };
   }
 
-  const maxAttempts = callback.retry?.maxAttempts ?? 3;
-  const backoffMs = callback.retry?.backoffMs ?? 1000;
+  const maxAttempts = Math.min(Math.max(Number(callback.retry?.maxAttempts ?? 3) || 3, 1), 5);
+  const backoffMs = Math.min(Math.max(Number(callback.retry?.backoffMs ?? 1000) || 0, 0), 60_000);
   const callbackOrigin = getCallbackLogOrigin(callback.url);
   const log = createChildLogger({ jobId: options.jobId, callbackOrigin });
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const response = await (options.axiosImpl ?? axios)({
+        const response = await (options.axiosImpl ?? axios)({
         url: callback.url,
         method: 'POST',
         headers: {
@@ -45,9 +45,10 @@ async function deliverSingleCallback(
           'X-Stepper-Timestamp': Date.now().toString(),
           ...callback.headers,
         },
-        data: payload,
-        timeout: 10_000,
-        validateStatus: () => true,
+          data: payload,
+          timeout: 10_000,
+          maxRedirects: 0,
+          validateStatus: () => true,
       });
 
       if (response.status >= 200 && response.status < 300) {
@@ -68,7 +69,7 @@ async function deliverSingleCallback(
       if (attempt < maxAttempts) {
         const delay = backoffMs * Math.pow(2, attempt - 1);
         log.warn(
-          { attempt, delay, error: error instanceof Error ? error.message : String(error) },
+          { attempt, delay, errorCode: 'CALLBACK_REQUEST_ERROR' },
           'Callback delivery errored, retrying'
         );
         await sleep(delay);
@@ -78,7 +79,7 @@ async function deliverSingleCallback(
       return {
         url: callback.url,
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: 'Callback request failed',
       };
     }
   }

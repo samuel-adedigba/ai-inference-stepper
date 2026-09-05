@@ -20,8 +20,8 @@ export function createProviderAdapter(config: ProviderConfig): ProviderAdapter |
         }
 
         return adapter;
-    } catch (error) {
-        logger.error({ provider: config.name, error }, 'Failed to create provider adapter');
+    } catch {
+        logger.error({ provider: config.name, errorCode: 'PROVIDER_ADAPTER_INIT_FAILED' }, 'Failed to create provider adapter');
         return null;
     }
 }

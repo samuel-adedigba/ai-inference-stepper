@@ -60,7 +60,7 @@ export class HuggingFaceSpaceAdapter implements ProviderAdapter {
             // Parse and validate using runtime parser router.
             const validation = parseProviderOutput(request, responseText);
             if (!validation.valid) {
-                logger.warn({ error: validation.error, response: responseText.slice(0, 200) }, 'HF Space returned invalid report');
+                logger.warn({ provider: this.name, errorCode: ProviderErrorType.InvalidResponse }, 'HF Space returned invalid report');
                 throw new InvalidResponseError(`Validation failed: ${validation.error}`);
             }
 
@@ -114,7 +114,7 @@ export class HuggingFaceSpaceAdapter implements ProviderAdapter {
             }
         }
 
-        logger.error({ error }, 'Unexpected HF Space error');
+        logger.error({ provider: this.name, errorCode: ProviderErrorType.Unknown }, 'Unexpected HF Space error');
         return new ProviderError('Unexpected error', ProviderErrorType.Unknown);
     }
 }

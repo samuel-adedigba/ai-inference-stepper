@@ -33,12 +33,15 @@ export async function safeRequest<T = unknown>(
   options: SafeRequestOptions = {}
 ): Promise<SafeRequestResult<T>> {
   const timeout = options.timeout || 15000;
+  const maxRetryAfterSeconds = 3600;
 
   try {
     const response: AxiosResponse<T> = await axios({
       ...options,
       url,
       timeout,
+      maxContentLength: 5 * 1024 * 1024,
+      maxBodyLength: 2 * 1024 * 1024,
       validateStatus: (status) => status < 600, // Don't throw on any status
     });
 
@@ -47,7 +50,7 @@ export async function safeRequest<T = unknown>(
     const retryAfterHeader = response.headers['retry-after'];
     if (retryAfterHeader) {
       const parsed = parseInt(retryAfterHeader, 10);
-      retryAfter = isNaN(parsed) ? undefined : parsed;
+      retryAfter = isNaN(parsed) ? undefined : Math.min(Math.max(parsed, 0), maxRetryAfterSeconds);
     }
 
     // Throw on error statuses
@@ -87,7 +90,7 @@ export async function safeRequest<T = unknown>(
       // Parse response error
       const status = axiosError.response?.status;
       const retryAfter = axiosError.response?.headers['retry-after']
-        ? parseInt(axiosError.response.headers['retry-after'], 10)
+        ? Math.min(Math.max(parseInt(axiosError.response.headers['retry-after'], 10), 0), maxRetryAfterSeconds)
         : undefined;
 
       throw new RequestError(
@@ -98,7 +101,7 @@ export async function safeRequest<T = unknown>(
       );
     }
 
-    logger.error({ error }, 'Unexpected request error');
+    logger.error({ errorCode: 'UNKNOWN_REQUEST_ERROR' }, 'Unexpected request error');
     throw new RequestError('Unexpected error', undefined, 'UNKNOWN');
   }
 }

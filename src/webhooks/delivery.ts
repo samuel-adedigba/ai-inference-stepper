@@ -49,8 +49,8 @@ export async function sendWebhook(
         return { success: false, error: 'Webhook URL origin is not allowed' };
     }
 
-    const maxRetries = config.maxRetries || 3;
-    const retryDelayMs = config.retryDelayMs || 5000;
+    const maxRetries = Math.min(Math.max(Number(config.maxRetries ?? 3) || 3, 1), 5);
+    const retryDelayMs = Math.min(Math.max(Number(config.retryDelayMs ?? 5000) || 0, 0), 60_000);
 
     try {
         const payloadString = JSON.stringify(payload);
@@ -70,6 +70,7 @@ export async function sendWebhook(
             },
             data: payloadString,
             timeout: 10_000,
+            maxRedirects: 0,
             validateStatus: () => true,
         });
 
@@ -79,10 +80,7 @@ export async function sendWebhook(
         }
 
         // Non-OK response
-        const errorBody = typeof response.data === 'string'
-            ? response.data
-            : JSON.stringify(response.data) || 'Unable to read response';
-        log.warn({ statusCode: response.status, errorBody }, 'Webhook delivery failed with non-OK status');
+        log.warn({ statusCode: response.status, errorCode: 'WEBHOOK_HTTP_ERROR' }, 'Webhook delivery failed with non-OK status');
 
         // Retry on 5xx errors or specific 4xx errors
         const shouldRetry = response.status >= 500 || response.status === 408 || response.status === 429;
@@ -96,12 +94,11 @@ export async function sendWebhook(
         return {
             success: false,
             statusCode: response.status,
-            error: `HTTP ${response.status}: ${errorBody.substring(0, 200)}`
+            error: `Webhook returned HTTP ${response.status}`
         };
 
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        log.error({ error: errorMessage, attempt }, 'Webhook delivery error');
+        log.error({ errorCode: 'WEBHOOK_NETWORK_ERROR', attempt }, 'Webhook delivery error');
 
         // Retry on network errors
         if (attempt < maxRetries) {
@@ -112,7 +109,7 @@ export async function sendWebhook(
 
         return {
             success: false,
-            error: `Network error after ${maxRetries} attempts: ${errorMessage}`
+            error: `Webhook network error after ${maxRetries} attempts`
         };
     }
 }

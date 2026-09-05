@@ -86,7 +86,7 @@ export class HttpTemplateAdapter implements ProviderAdapter {
             const validation = parseProviderOutput(request, responseText);
             if (!validation.valid) {
                 logger.warn({
-                    provider: this.name, error: validation.error, responsePreview: responseText.slice(0, 200)
+                    provider: this.name, errorCode: ProviderErrorType.InvalidResponse,
                 }, 'Provider returned invalid report');
                 throw new InvalidResponseError(`Validation failed: ${validation.error}`);
             }
@@ -133,7 +133,7 @@ export class HttpTemplateAdapter implements ProviderAdapter {
             }
         }
 
-        logger.error({ provider: this.name, error }, 'Unexpected provider error');
+        logger.error({ provider: this.name, errorCode: ProviderErrorType.Unknown }, 'Unexpected provider error');
         return new ProviderError('Unexpected error', ProviderErrorType.Unknown);
     }
 }

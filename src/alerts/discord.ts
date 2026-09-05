@@ -55,36 +55,31 @@ export async function sendDiscordAlert(alert: DiscordAlert): Promise<void> {
         if (response.status < 200 || response.status >= 300) {
             logger.warn({ status: response.status }, 'Discord webhook request failed');
         }
-    } catch (error) {
-        logger.error({ error }, 'Failed to send Discord alert');
+    } catch {
+        logger.error({ errorCode: 'DISCORD_ALERT_ERROR' }, 'Failed to send Discord alert');
     }
 }
 
 /**
  * Send provider failure alert
  */
-export async function alertProviderFailure(provider: string, errorCount: number, error?: unknown): Promise<void> {
-    const errorDetail = error instanceof Error ? error.message : String(error || 'Unknown error');
-
+export async function alertProviderFailure(provider: string, errorCount: number, _error?: unknown): Promise<void> {
     await sendDiscordAlert({
         title: 'AI Provider Failure',
-        message: `Provider **${provider}** has failed ${errorCount} times\n\n**Error Details:**\n\`${errorDetail}\``,
+        message: `Provider **${provider}** has failed ${errorCount} times.`,
         severity: errorCount >= 5 ? 'critical' : 'warning',
-        metadata: { provider, errorCount, error: errorDetail, timestamp: new Date().toISOString() },
+        metadata: { provider, errorCount, timestamp: new Date().toISOString() },
     });
 }
 
 /**
  * Send circuit breaker alert
  */
-export async function alertCircuitOpen(provider: string, lastError?: unknown): Promise<void> {
-    const errorDetail = lastError ? (lastError instanceof Error ? lastError.message : String(lastError)) : undefined;
-    const message = `Circuit breaker for provider **${provider}** is now OPEN${errorDetail ? `\n\n**Last Error:**\n\`${errorDetail}\`` : ''}`;
-
+export async function alertCircuitOpen(provider: string, _lastError?: unknown): Promise<void> {
     await sendDiscordAlert({
         title: 'Circuit Breaker Opened',
-        message,
+        message: `Circuit breaker for provider **${provider}** is now OPEN.`,
         severity: 'critical',
-        metadata: { provider, lastError: errorDetail, timestamp: new Date().toISOString() },
+        metadata: { provider, timestamp: new Date().toISOString() },
     });
 }

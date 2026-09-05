@@ -16,7 +16,10 @@ export function getRateLimitRedisClient(): Redis {
             connectTimeout: 1000,
         });
         rateLimitRedis.on('error', (error) => {
-            logger.error({ error }, 'Rate-limit Redis client error');
+            const errorCode = typeof (error as NodeJS.ErrnoException).code === 'string'
+                ? (error as NodeJS.ErrnoException).code
+                : 'REDIS_RATE_LIMIT_ERROR';
+            logger.error({ errorCode }, 'Rate-limit Redis client error');
         });
     }
     return rateLimitRedis;

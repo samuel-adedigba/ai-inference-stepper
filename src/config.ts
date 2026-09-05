@@ -10,6 +10,11 @@ function positiveInteger(value: string | undefined, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function allowsInsecureLocalRuntime(environment: NodeJS.ProcessEnv = process.env): boolean {
+  return environment.NODE_ENV === 'test'
+    || (environment.NODE_ENV === 'development' && environment.ALLOW_INSECURE_DEV === 'true');
+}
+
 /**
  * Load provider configurations from environment
  */
@@ -61,6 +66,7 @@ function loadProviderConfigs(): ProviderConfig[] {
   return providers;
 }
 export function loadConfig(): StepperConfig {
+  const allowInsecureLocalRuntime = allowsInsecureLocalRuntime();
   const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
   const queueName = process.env.QUEUE_NAME || 'report-generation';
   const batchQueueName = process.env.BATCH_QUEUE_NAME || 'inference-batch-generation';
@@ -215,7 +221,7 @@ export function loadConfig(): StepperConfig {
         enabled: process.env.CORS_ENABLED !== 'false', // Enabled by default
         allowedOrigins: process.env.CORS_ALLOWED_ORIGINS
           ? process.env.CORS_ALLOWED_ORIGINS.split(',').map(s => s.trim())
-          : process.env.NODE_ENV === 'production' ? [] : ['*'],
+          : allowInsecureLocalRuntime ? ['*'] : [],
         allowCredentials: process.env.CORS_ALLOW_CREDENTIALS === 'true',
       },
       // Rate Limiting: Prevent abuse and DDoS
@@ -233,7 +239,7 @@ export function loadConfig(): StepperConfig {
       // API Key: Simple authentication for API access
       apiKey: {
         // Production must fail closed if the deployment forgets the opt-in flag.
-        enabled: process.env.NODE_ENV === 'production' || process.env.API_KEY_ENABLED === 'true',
+        enabled: !allowInsecureLocalRuntime || process.env.API_KEY_ENABLED === 'true',
         headerName: process.env.API_KEY_HEADER || 'x-api-key',
         skipHealthEndpoints: process.env.API_KEY_SKIP_HEALTH !== 'false', // Skip auth for health/metrics
       },
@@ -243,6 +249,67 @@ export function loadConfig(): StepperConfig {
       metricsPort: process.env.METRICS_PORT ? parseInt(process.env.METRICS_PORT, 10) : undefined,
     },
   };
+}
+
+/** Fail before listening when production cannot authenticate or deliver jobs. */
+export function assertProductionConfig(config: StepperConfig): void {
+  if (allowsInsecureLocalRuntime()) return;
+  const required = ['STEPPER_API_KEY', 'REDIS_URL'];
+  if (config.webhook.enabled) required.push('WEBHOOK_SECRET');
+  const missing = required.filter((name) => !String(process.env[name] || '').trim());
+  if (config.security.cors.enabled && config.security.cors.allowedOrigins.includes('*')) {
+    throw new Error('CORS_ALLOWED_ORIGINS must be explicit unless ALLOW_INSECURE_DEV=true in development');
+  }
+  for (const provider of config.providers.filter((item) => item.enabled)) {
+    if (provider.apiKeyEnvVar && !String(process.env[provider.apiKeyEnvVar] || '').trim()) {
+      missing.push(provider.apiKeyEnvVar);
+    }
+  }
+  if (missing.length) throw new Error(`Missing required production configuration: ${[...new Set(missing)].join(', ')}`);
+}
+
+/** Reject unsafe numeric overrides before they reach queues, retries, or providers. */
+export function assertRuntimeConfig(config: StepperConfig): void {
+  const isBoundedInteger = (value: unknown, min: number, max: number): boolean =>
+    Number.isInteger(value) && Number(value) >= min && Number(value) <= max;
+
+  if (!isBoundedInteger(config.queue.concurrency, 1, 100)
+    || !isBoundedInteger(config.batch.queueConcurrency, 1, 100)
+    || !isBoundedInteger(config.batch.maxItems, 1, 1000)
+    || !isBoundedInteger(config.batch.maxConcurrency, 1, 100)
+    || !isBoundedInteger(config.webhook.maxRetries, 1, 5)
+    || !isBoundedInteger(config.webhook.retryDelayMs, 0, 60_000)
+    || !isBoundedInteger(config.retry.maxAttemptsPerProvider, 1, 10)
+    || !isBoundedInteger(config.retry.baseDelayMs, 0, 600_000)
+    || !isBoundedInteger(config.retry.maxJitterMs, 0, 600_000)
+    || !isBoundedInteger(config.retry.rateLimitFallbackSeconds, 1, 86_400)
+    || !isBoundedInteger(config.security.rateLimit.windowMs, 1_000, 86_400_000)
+    || !isBoundedInteger(config.security.rateLimit.maxRequests, 1, 1_000_000)
+    || !isBoundedInteger(config.security.rateLimit.maxRequestsPerUser, 1, 1_000_000)) {
+    throw new Error('Invalid Stepper runtime limits; refusing to start');
+  }
+
+  let redisProtocol = '';
+  try {
+    redisProtocol = new URL(config.redis.url).protocol;
+  } catch {
+    throw new Error('REDIS_URL must be a valid redis:// or rediss:// URL');
+  }
+  if (!['redis:', 'rediss:'].includes(redisProtocol)
+    || (process.env.NODE_ENV === 'production' && redisProtocol !== 'rediss:')) {
+    throw new Error('Redis TLS is required in production');
+  }
+  if (config.security.cors.allowCredentials && config.security.cors.allowedOrigins.includes('*')) {
+    throw new Error('Credentialed CORS cannot use a wildcard origin');
+  }
+
+  for (const provider of config.providers.filter((item) => item.enabled)) {
+    if (!isBoundedInteger(provider.concurrency, 1, 100)
+      || !isBoundedInteger(provider.timeout, 100, 300_000)
+      || !isBoundedInteger(provider.rateLimitRPM ?? provider.rateLimitRPS, 1, 1_000_000)) {
+      throw new Error(`Invalid runtime limits for provider '${provider.name}'`);
+    }
+  }
 }
 
 function mergeConfig(base: StepperConfig, overrides: StepperConfigOverrides<StepperConfig>): StepperConfig {

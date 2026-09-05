@@ -12,6 +12,8 @@ export type StepperQueueJobData = StepperJobData<unknown, unknown>;
 export type StepperBatchQueueJobData = {
     jobId: string;
     batch: StepperBatchRequest;
+    /** Non-reversible digest of the API key that created the HTTP job. */
+    ownerKey?: string;
 };
 
 let queue: Queue<StepperQueueJobData> | null = null;
@@ -44,11 +46,11 @@ export function getBatchQueue(): Queue<StepperBatchQueueJobData> {
 }
 
 /** Enqueue one batch job. Items are processed independently by the worker. */
-export async function enqueueBatchJob(batch: StepperBatchRequest): Promise<string> {
+export async function enqueueBatchJob(batch: StepperBatchRequest, options: { ownerKey?: string } = {}): Promise<string> {
     const jobId = uuidv4();
     const queue = getBatchQueue();
 
-    await queue.add('generate-batch', { jobId, batch }, {
+    await queue.add('generate-batch', { jobId, batch, ownerKey: options.ownerKey }, {
         jobId,
         removeOnComplete: 100,
         removeOnFail: 500,
@@ -67,9 +69,9 @@ export async function enqueueBatchJob(batch: StepperBatchRequest): Promise<strin
 export async function enqueueRequestJob<TPayload = unknown, TOutput = unknown>(
     request: StepperRequest<TPayload, TOutput>,
     cacheKey: string,
-    options: { priority?: number; callbackUrl?: string } = {}
+    options: { priority?: number; callbackUrl?: string; ownerKey?: string; jobId?: string } = {}
 ): Promise<string> {
-    const jobId = uuidv4();
+    const jobId = options.jobId || uuidv4();
     const queue = getQueue();
 
     const jobData: StepperJobData<TPayload, TOutput> = {
@@ -78,6 +80,7 @@ export async function enqueueRequestJob<TPayload = unknown, TOutput = unknown>(
         cacheKey,
         priority: options.priority,
         callbackUrl: options.callbackUrl,
+        ownerKey: options.ownerKey,
     };
 
     try {
@@ -96,7 +99,7 @@ export async function enqueueRequestJob<TPayload = unknown, TOutput = unknown>(
         logger.info({ jobId, cacheKey }, 'Job enqueued');
         return jobId;
     } catch (error) {
-        logger.error({ error, jobId }, 'Failed to enqueue job');
+        logger.error({ errorCode: 'QUEUE_ENQUEUE_FAILED', jobId }, 'Failed to enqueue job');
         throw error;
     }
 }
@@ -107,7 +110,7 @@ export async function enqueueRequestJob<TPayload = unknown, TOutput = unknown>(
 export async function enqueueReportJob(
     input: PromptInput,
     cacheKey: string,
-    options: { priority?: number; callbackUrl?: string } = {}
+    options: { priority?: number; callbackUrl?: string; ownerKey?: string } = {}
 ): Promise<string> {
     const request = createCommitReportRequest(input);
     return enqueueRequestJob(request, cacheKey, options);
@@ -116,7 +119,7 @@ export async function enqueueReportJob(
 /**
  * Get job status
  */
-export async function getJobStatus(jobId: string): Promise<{
+export async function getJobStatus(jobId: string, options: { includeData?: boolean } = {}): Promise<{
     id: string;
     state: string;
     progress?: unknown;
@@ -134,11 +137,14 @@ export async function getJobStatus(jobId: string): Promise<{
             state,
             progress: job.progress as number | undefined,
             result: job.returnvalue,
-            failedReason: job.failedReason,
-            data: job.data,
+            failedReason: job.failedReason ? 'Job failed' : undefined,
+            // Queue data contains the original prompt, payload, callbacks, and
+            // internal ownership digest. Expose it only to the trusted HTTP
+            // adapter that needs it to bind cache reads.
+            data: options.includeData ? job.data : undefined,
         };
-    } catch (error) {
-        logger.error({ error, jobId }, 'Failed to get job status');
+    } catch {
+        logger.error({ errorCode: 'QUEUE_STATUS_FAILED', jobId }, 'Failed to get job status');
         return null;
     }
 }

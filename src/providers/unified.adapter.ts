@@ -107,11 +107,6 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
                 responseLength: responseText?.length || 0
             }, `✅ [${this.name}] AI response received in ${processingTime}ms`);
 
-            logger.debug({
-                provider: this.name,
-                rawResponse: responseText?.slice(0, 500) + (responseText?.length > 500 ? '...' : '')
-            }, `📄 [${this.name}] Raw AI response (first 500 chars)`);
-
             if (!responseText) {
                 throw new InvalidResponseError('Provider response missing expected content');
             }
@@ -123,8 +118,7 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
             if (!validation.valid) {
                 logger.warn({
                     provider: this.name,
-                    error: validation.error,
-                    responsePreview: responseText.slice(0, 200),
+                    errorCode: ProviderErrorType.InvalidResponse,
                     responseLength: responseText.length,
                     isHtmlResponse: responseText.trim().startsWith('<')
                 }, `❌ [${this.name}] Validation failed: ${validation.error}`);
@@ -169,7 +163,7 @@ export class UnifiedProviderAdapter implements ProviderAdapter {
             }
         }
 
-        logger.error({ provider: this.name, error }, 'Unexpected provider error');
+        logger.error({ provider: this.name, errorCode: ProviderErrorType.Unknown }, 'Unexpected provider error');
         return new ProviderError('Unexpected error', ProviderErrorType.Unknown);
     }
 }

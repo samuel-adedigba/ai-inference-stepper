@@ -15,18 +15,26 @@ let redisClient: Redis | null = null;
 export function getRedisClient(): Redis {
     if (!redisClient) {
         redisClient = new Redis(config.redis.url, {
-            maxRetriesPerRequest: null, // Required by BullMQ for blocking operations
+            // Cache commands must fail promptly. The queue has its own BullMQ
+            // connection and is the only client that needs blocking retries.
+            maxRetriesPerRequest: 1,
+            enableOfflineQueue: false,
+            connectTimeout: 1000,
+            commandTimeout: 3000,
             enableReadyCheck: true,
             lazyConnect: false,
         });
 
         redisClient.on('error', (err) => {
-            logger.error({ err }, 'Redis client error');
+            const errorCode = typeof (err as NodeJS.ErrnoException).code === 'string'
+                ? (err as NodeJS.ErrnoException).code
+                : 'REDIS_CONNECTION_ERROR';
+            logger.error({ errorCode }, 'Redis client error');
             void sendDiscordAlert({
                 title: 'Redis Connection Error',
-                message: `Redis client encountered an error: ${err.message}`,
+                message: 'Redis client encountered a connection error.',
                 severity: 'critical',
-                metadata: { error: err.message, timestamp: new Date().toISOString() }
+                metadata: { errorCode, timestamp: new Date().toISOString() }
             });
         });
 
@@ -76,12 +84,24 @@ function getOutputSchemaFingerprint(request: StepperRequest<unknown, unknown>): 
  * Priority order:
  * 1) request.cacheKey (consumer-controlled stable identity)
  * 2) deterministic hash from request identity + prompt/payload fingerprint
+ *
+ * Caller-controlled keys are always namespaced by `ownerKey` (a
+ * non-reversible hash of the authenticated API key) when one is supplied, so
+ * one tenant can never read, overwrite, or clear another tenant's entry.
+ * HTTP adapters must always pass the authenticated owner; omitting it is only
+ * valid for single-tenant in-process use.
  */
 export function buildRequestCacheKey<TPayload = unknown, TOutput = unknown>(
-    request: StepperRequest<TPayload, TOutput>
+    request: StepperRequest<TPayload, TOutput>,
+    ownerKey?: string,
 ): string {
+    const ownerScope = ownerKey
+        ? `owner:${crypto.createHash('sha256').update(ownerKey).digest('hex').slice(0, 24)}:`
+        : '';
+
     if (request.cacheKey && request.cacheKey.trim().length > 0) {
-        return `${config.redis.keyPrefix}req:${request.cacheKey.trim()}`;
+        const customKeyHash = crypto.createHash('sha256').update(request.cacheKey.trim()).digest('hex');
+        return `${config.redis.keyPrefix}req:${ownerScope}custom:${customKeyHash}`;
     }
 
     const fingerprintSource = {
@@ -100,7 +120,14 @@ export function buildRequestCacheKey<TPayload = unknown, TOutput = unknown>(
         .digest('hex')
         .slice(0, 24);
 
-    return `${config.redis.keyPrefix}req:${request.tenantId || 'public'}:${request.requestId || 'auto'}:${hash}`;
+    return `${config.redis.keyPrefix}req:${ownerScope}${request.tenantId || 'public'}:${request.requestId || 'auto'}:${hash}`;
+}
+
+/** Bind compatibility cache keys to the authenticated HTTP owner. */
+export function scopeCacheKeyToOwner(cacheKey: string, ownerKey?: string): string {
+    if (!ownerKey) return cacheKey;
+    const ownerScope = crypto.createHash('sha256').update(ownerKey).digest('hex').slice(0, 24);
+    return `${config.redis.keyPrefix}owner:${ownerScope}:${crypto.createHash('sha256').update(cacheKey).digest('hex')}`;
 }
 
 /**
@@ -115,8 +142,8 @@ export async function getReportCache(key: string): Promise<CacheEntry | null> {
 
         const entry: CacheEntry = JSON.parse(data);
         return entry;
-    } catch (error) {
-        logger.error({ error, key }, 'Failed to get cache entry');
+    } catch {
+        logger.error({ errorCode: 'CACHE_READ_FAILED', key }, 'Failed to get cache entry');
         return null;
     }
 }
@@ -139,10 +166,104 @@ export async function setDehydrated(key: string, jobId: string): Promise<void> {
     try {
         await redis.setex(key, config.cache.ttlSeconds, JSON.stringify(entry)); //Store in Redis with expiration time Default is 604,800 seconds = 7 days
         logger.debug({ key, jobId }, 'Created dehydrated cache entry');
-    } catch (error) {
-        logger.error({ error, key }, 'Failed to set dehydrated cache');
-        throw error;
+    } catch {
+        logger.error({ errorCode: 'CACHE_DEHYDRATED_WRITE_FAILED', key }, 'Failed to set dehydrated cache');
+        // Queue insertion is the durable hand-off. A cache outage must not
+        // cause the caller to retry and enqueue a second paid job.
     }
+}
+
+/**
+ * Atomically reserve a cache key before queue insertion. Without this claim,
+ * two concurrent cache misses can both enqueue provider work before either
+ * process writes the dehydrated marker.
+ */
+export async function claimDehydrated(key: string, jobId: string): Promise<{ state: 'claimed' | 'existing' | 'hydrated'; jobId?: string }> {
+    const redis = getRedisClient();
+    const entry: CacheEntry = {
+        status: 'dehydrated',
+        jobId,
+        timestamps: { created: new Date().toISOString(), updated: new Date().toISOString() },
+    };
+    const script = `
+        local current = redis.call('GET', KEYS[1])
+        if not current then
+            redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
+            return {'claimed', ARGV[3]}
+        end
+        local ok, decoded = pcall(cjson.decode, current)
+        if ok and decoded.status == 'dehydrated' and type(decoded.jobId) == 'string' then
+            return {'existing', decoded.jobId}
+        end
+        if ok and decoded.status == 'failed' then
+            redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
+            return {'claimed', ARGV[3]}
+        end
+        return {'hydrated', ''}
+    `;
+    const result = await redis.eval(script, 1, key, JSON.stringify(entry), String(config.cache.ttlSeconds), jobId) as string[];
+    const state = result?.[0];
+    if (state === 'claimed' || state === 'existing' || state === 'hydrated') {
+        return { state, jobId: result[1] || undefined };
+    }
+    throw new Error('Invalid cache claim response');
+}
+
+/** Release only the marker created by this enqueue attempt. */
+export async function releaseDehydratedClaim(key: string, jobId: string): Promise<void> {
+    const redis = getRedisClient();
+    const script = `
+        local current = redis.call('GET', KEYS[1])
+        if not current then return 0 end
+        local ok, decoded = pcall(cjson.decode, current)
+        if ok and decoded.status == 'dehydrated' and decoded.jobId == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+    `;
+    await redis.eval(script, 1, key, jobId);
+}
+
+/** Claim a stale hydrated entry for one refresh, using the observed version as a CAS token. */
+export async function claimStaleRefresh(
+    key: string,
+    jobId: string,
+    expectedUpdatedAt: string,
+): Promise<{ state: 'claimed' | 'existing' | 'changed'; jobId?: string }> {
+    const redis = getRedisClient();
+    const entry: CacheEntry = {
+        status: 'dehydrated',
+        jobId,
+        timestamps: { created: new Date().toISOString(), updated: new Date().toISOString() },
+    };
+    const script = `
+        local current = redis.call('GET', KEYS[1])
+        if not current then return {'changed', ''} end
+        local ok, decoded = pcall(cjson.decode, current)
+        if not ok then return {'changed', ''} end
+        if decoded.status == 'dehydrated' and type(decoded.jobId) == 'string' then
+            return {'existing', decoded.jobId}
+        end
+        if decoded.status == 'hydrated' and decoded.timestamps.updated == ARGV[3] then
+            redis.call('SETEX', KEYS[1], ARGV[2], ARGV[1])
+            return {'claimed', ARGV[4]}
+        end
+        return {'changed', ''}
+    `;
+    const result = await redis.eval(
+        script,
+        1,
+        key,
+        JSON.stringify(entry),
+        String(config.cache.ttlSeconds),
+        expectedUpdatedAt,
+        jobId,
+    ) as string[];
+    const state = result?.[0];
+    if (state === 'claimed' || state === 'existing' || state === 'changed') {
+        return { state, jobId: result[1] || undefined };
+    }
+    throw new Error('Invalid stale refresh claim response');
 }
 
 /**
@@ -181,9 +302,11 @@ export async function setHydrated(
     try {
         await redis.setex(key, ttl || config.cache.ttlSeconds, JSON.stringify(entry));
         logger.debug({ key, fallback }, 'Stored hydrated cache entry');
-    } catch (error) {
-        logger.error({ error, key }, 'Failed to set hydrated cache');
-        throw error;
+    } catch {
+        logger.error({ errorCode: 'CACHE_HYDRATED_WRITE_FAILED', key }, 'Failed to set hydrated cache');
+        // Cache persistence is an optimization. The worker has already paid for
+        // and produced the result, so a cache outage must not trigger a provider
+        // retry and duplicate external API spend.
     }
 }
 
@@ -212,8 +335,8 @@ export async function markFailed(
     try {
         await redis.setex(key, 3600, JSON.stringify(entry)); // Keep failed for 1 hour
         logger.debug({ key }, 'Marked cache entry as failed');
-    } catch (error) {
-        logger.error({ error, key }, 'Failed to mark cache as failed');
+    } catch {
+        logger.error({ errorCode: 'CACHE_FAILURE_WRITE_FAILED', key }, 'Failed to mark cache as failed');
     }
 }
 
@@ -250,8 +373,8 @@ export async function deleteCacheEntry(key: string): Promise<void> {
     try {
         await redis.del(key);
         logger.debug({ key }, 'Deleted cache entry after successful delivery');
-    } catch (error) {
-        logger.error({ error, key }, 'Failed to delete cache entry');
+    } catch {
+        logger.error({ errorCode: 'CACHE_DELETE_FAILED', key }, 'Failed to delete cache entry');
     }
 }
 

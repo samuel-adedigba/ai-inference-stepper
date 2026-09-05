@@ -18,4 +18,16 @@ describe('callback URL policy', () => {
   it('fails closed when production origins are not configured', () => {
     expect(isAllowedCallbackUrl('https://example.com/report', { NODE_ENV: 'production' })).toBe(false);
   });
+
+  it('fails closed for omitted and staging environments', () => {
+    expect(isAllowedCallbackUrl('https://untrusted.example/report', {})).toBe(false);
+    expect(isAllowedCallbackUrl('https://untrusted.example/report', { NODE_ENV: 'staging' })).toBe(false);
+  });
+
+  it('allows broad callbacks only with an explicit development opt-in', () => {
+    expect(isAllowedCallbackUrl('https://example.com/report', {
+      NODE_ENV: 'development',
+      ALLOW_INSECURE_DEV: 'true',
+    })).toBe(true);
+  });
 });

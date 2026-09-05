@@ -257,10 +257,10 @@ async function callWithRetries(
       return { result, durationMs };
     } catch (error) {
       const durationMs = Date.now() - startTime;
-      log.warn({ attempt, error: error instanceof Error ? error.message : String(error), durationMs }, 'Provider call failed');
+      log.warn({ attempt, errorCode: error instanceof ProviderError ? error.type : 'UNKNOWN', durationMs }, 'Provider call failed');
 
       if (error instanceof AuthError) {
-        log.error({ error: error.message }, 'Auth error - stopping retries');
+        log.error({ errorCode: error.type }, 'Auth error - stopping retries');
         throw error;
       }
 
@@ -304,8 +304,8 @@ async function invokeCallback<T extends keyof StepperCallbacks>(
 
   try {
     await (callback as (...cbArgs: unknown[]) => void | Promise<void>)(...args);
-  } catch (error) {
-    logger.error({ callback: name, error }, 'Callback threw error');
+  } catch {
+    logger.error({ callback: name, errorCode: 'CALLBACK_ERROR' }, 'Callback threw error');
   }
 }
 
@@ -328,6 +328,7 @@ export async function generateRequestNow<TOutput = unknown>(
 
   const startTime = Date.now();
   const providersAttempted: ProviderAttemptMeta[] = [];
+  let lastProviderErrorMessage: string | undefined;
   const metricsContext = getRequestMetricsContext(runtimeRequest);
 
   await invokeCallback('onStart', jobId, request);
@@ -396,8 +397,8 @@ export async function generateRequestNow<TOutput = unknown>(
           .then((callbackResults) => {
             log.info({ callbackResults: callbackResults.map((r) => ({ url: r.url, success: r.success })) }, 'Callbacks executed');
           })
-          .catch((err: unknown) => {
-            log.error({ error: err instanceof Error ? err.message : String(err) }, 'Callbacks execution error');
+          .catch((_err: unknown) => {
+            log.error({ errorCode: 'CALLBACK_EXECUTION_ERROR' }, 'Callbacks execution error');
           });
       }
 
@@ -410,13 +411,13 @@ export async function generateRequestNow<TOutput = unknown>(
         timings: { totalMs, providerMs: durationMs },
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      lastProviderErrorMessage = error instanceof Error ? error.message : String(error);
       const errorCode = error instanceof ProviderError ? error.type : 'UNKNOWN';
       const retryAfterSeconds = error instanceof RateLimitError
         ? error.retryAfter || config.retry.rateLimitFallbackSeconds
         : undefined;
 
-      log.warn({ provider: providerName, error: errorMessage, errorCode }, 'Provider failed');
+      log.warn({ provider: providerName, errorCode }, 'Provider failed');
 
       provider.consecutiveErrors = (provider.consecutiveErrors || 0) + 1;
 
@@ -424,7 +425,7 @@ export async function generateRequestNow<TOutput = unknown>(
       providersAttempted.push({
         provider: providerName,
         attemptNumber,
-        error: errorMessage,
+        error: errorCode,
         errorCode,
         retryAfterSeconds,
       });
@@ -456,14 +457,14 @@ export async function generateRequestNow<TOutput = unknown>(
     // TODO: verify: include retryAfterSeconds in queue-level metadata so
     // backoff can follow provider hints more precisely.
     await invokeCallback('onFailure', jobId, failedAttempts, {
-      lastError: failedAttempts[failedAttempts.length - 1]?.error,
+      lastError: lastProviderErrorMessage,
     });
     throw new AllProvidersRateLimitedError(retryAfterSeconds, rateLimitedProviders);
   }
 
   if (!config.fallback.enabled) {
     await invokeCallback('onFailure', jobId, failedAttempts, {
-      lastError: failedAttempts[failedAttempts.length - 1]?.error,
+      lastError: lastProviderErrorMessage,
     });
     throw new AllProvidersFailedError(providersAttempted);
   }

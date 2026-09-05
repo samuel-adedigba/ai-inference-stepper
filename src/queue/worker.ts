@@ -26,23 +26,41 @@ let worker: Worker<StepperJobData<unknown, unknown>> | null = null;
 let batchWorker: Worker<StepperBatchQueueJobData> | null = null;
 
 function getFailure(error: unknown): JobFailure {
-    const message = error instanceof Error ? error.message : String(error);
     const transientProviderErrors: ProviderErrorType[] = [
         ProviderErrorType.RateLimit,
         ProviderErrorType.Timeout,
         ProviderErrorType.Unavailable,
     ];
+    const errorCode = error instanceof ProviderError
+        ? error.type
+        : error instanceof AllProvidersRateLimitedError
+            ? ProviderErrorType.RateLimit
+            : error instanceof AllProvidersFailedError
+                ? error.errorCode
+                : ProviderErrorType.Unknown;
+    const message = error instanceof AllProvidersRateLimitedError
+        ? 'All providers are currently rate-limited. Retry later.'
+        : error instanceof AllProvidersFailedError
+            ? 'All configured providers failed. Retry later.'
+            : error instanceof ProviderError
+                ? 'Provider request failed.'
+                : 'Generation failed. Retry later.';
     const failure: JobFailure = error instanceof AllProvidersFailedError
         ? {
-            errorCode: error.errorCode,
+            errorCode,
             message,
             retryable: error.retryable,
-            providersAttempted: error.providersAttempted,
+            providersAttempted: error.providersAttempted.map(({ provider, attemptNumber, errorCode: attemptCode, durationMs, retryAfterSeconds, skipped }) => ({
+                provider,
+                attemptNumber,
+                errorCode: attemptCode,
+                durationMs,
+                retryAfterSeconds,
+                skipped,
+            })),
         }
         : {
-            errorCode: error instanceof ProviderError
-                ? error.type
-                : error instanceof AllProvidersRateLimitedError ? ProviderErrorType.RateLimit : ProviderErrorType.Unknown,
+            errorCode,
             message,
             retryable: error instanceof AllProvidersRateLimitedError
                 || (error instanceof ProviderError && transientProviderErrors.includes(error.type)),
@@ -131,13 +149,11 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
 
         return result;
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        log.error({ error: errorMessage }, 'Job failed');
-
         const failure = getFailure(error);
+        log.error({ errorCode: failure.errorCode }, 'Job failed');
 
         // Preserve structured failure details for the status endpoint while BullMQ retries the job.
-        await markFailed(cacheKey, errorMessage, [], failure);
+        await markFailed(cacheKey, failure.message, failure.providersAttempted || [], failure);
 
         recordJobFailed();
 
@@ -147,7 +163,7 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
             const commitInput = toCommitReportInput(request);
             const failurePayload: StepperCallbackPayload<unknown> = {
                 success: false,
-                error: errorMessage,
+                error: failure.message,
                 metadata: {
                     jobId,
                     requestId: request.requestId,
@@ -164,10 +180,8 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
                 .then((callbackResults) => {
                     log.info({ callbackResults: callbackResults.map((r) => ({ url: r.url, success: r.success })) }, 'Failure callbacks executed');
                 })
-                .catch((err: unknown) => {
-                    log.warn({
-                        error: err instanceof Error ? err.message : String(err),
-                    }, 'Failed to execute failure callbacks');
+            .catch((_err: unknown) => {
+                    log.warn({ errorCode: 'CALLBACK_EXECUTION_ERROR' }, 'Failed to execute failure callbacks');
                 });
         }
 
@@ -181,9 +195,9 @@ async function processReportJob(job: Job<StepperJobData<unknown, unknown>>): Pro
                 job.data.callbackUrl,
                 config.webhook.secret,
                 jobId,
-                errorMessage
-            ).catch(err => {
-                log.warn({ error: err.message }, 'Failed to send failure webhook');
+                failure.message
+            ).catch((_err: unknown) => {
+                log.warn({ errorCode: 'FAILURE_WEBHOOK_ERROR' }, 'Failed to send failure webhook');
             });
         }
 
@@ -195,9 +209,10 @@ async function processBatchItem(
     item: { id: string; request: StepperJobData<unknown, unknown>['request'] },
     index: number,
     jobId: string,
+    ownerKey?: string,
 ): Promise<StepperBatchItemResult> {
     const { request } = item;
-    const cacheKey = buildRequestCacheKey(request);
+    const cacheKey = buildRequestCacheKey(request, ownerKey);
 
     try {
         const cached = request.cacheControl === 'no-cache' || request.cacheControl === 'refresh'
@@ -251,7 +266,7 @@ async function processBatchItem(
 }
 
 export async function processBatchJob(job: Job<StepperBatchQueueJobData>): Promise<StepperBatchResult> {
-    const { jobId, batch } = job.data;
+    const { jobId, batch, ownerKey } = job.data;
     const results: StepperBatchItemResult[] = new Array(batch.items.length);
     let nextIndex = 0;
     let completed = 0;
@@ -261,7 +276,7 @@ export async function processBatchJob(job: Job<StepperBatchQueueJobData>): Promi
         while (nextIndex < batch.items.length) {
             const index = nextIndex++;
             if (index >= batch.items.length) return;
-            results[index] = await processBatchItem(batch.items[index], index, jobId);
+            results[index] = await processBatchItem(batch.items[index], index, jobId, ownerKey);
             completed += 1;
             // Persist progress at a bounded cadence to avoid one Redis write per
             // item while still guaranteeing an exact final progress update.
@@ -300,16 +315,16 @@ export function startWorker(): void {
         logger.info({ jobId: job.id }, 'Job completed');
     });
 
-    worker.on('failed', (job, err) => {
-        logger.error({ jobId: job?.id, error: err.message }, 'Job failed');
+    worker.on('failed', (job, _err) => {
+        logger.error({ jobId: job?.id, errorCode: 'JOB_FAILED_PERMANENTLY' }, 'Job failed');
         if (job) {
             void sendDiscordAlert({
                 title: 'Job Failed Permanently',
-                message: `Job **${job.id}** failed after all retries.\n\n**Error:**\n\`${err.message}\``,
+                message: `Job **${job.id}** failed after all retries.`,
                 severity: 'warning',
                 metadata: {
                     jobId: job.id,
-                    error: err.message,
+                    errorCode: 'JOB_FAILED_PERMANENTLY',
                     tenantId: job.data.request.tenantId || 'unknown',
                     requestId: job.data.request.requestId,
                 }
@@ -328,16 +343,16 @@ export function startWorker(): void {
         logger.info({ jobId: job.id, itemCount: job.data.batch.items.length }, 'Batch job completed');
     });
 
-    batchWorker.on('failed', (job, err) => {
-        logger.error({ jobId: job?.id, error: err.message }, 'Batch job failed at worker level');
+    batchWorker.on('failed', (job, _err) => {
+        logger.error({ jobId: job?.id, errorCode: 'BATCH_JOB_FAILED' }, 'Batch job failed at worker level');
         if (job) {
             void sendDiscordAlert({
                 title: 'Batch Worker Failure',
-                message: `Batch job **${job.id}** failed before returning item results.\n\n**Error:**\n\`${err.message}\``,
+                message: `Batch job **${job.id}** failed before returning item results.`,
                 severity: 'warning',
                 metadata: {
                     jobId: job.id,
-                    error: err.message,
+                    errorCode: 'BATCH_JOB_FAILED',
                     tenantId: job.data.batch.tenantId || 'unknown',
                     requestId: job.data.batch.requestId,
                 },
@@ -345,13 +360,13 @@ export function startWorker(): void {
         }
     });
 
-    worker.on('error', (err) => {
-        logger.error({ error: err }, 'Worker error');
+    worker.on('error', (_err) => {
+        logger.error({ errorCode: 'WORKER_SYSTEM_ERROR' }, 'Worker error');
         void sendDiscordAlert({
             title: 'Worker System Error',
-            message: `The job queue worker encountered a system error: ${err.message}`,
+            message: 'The job queue worker encountered a system error.',
             severity: 'critical',
-            metadata: { error: err.message }
+            metadata: { errorCode: 'WORKER_SYSTEM_ERROR' }
         });
     });
 

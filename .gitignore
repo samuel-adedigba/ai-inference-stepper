@@ -2,9 +2,23 @@ node_modules/
 dist/
 .env
 .env.local
+.env.development
+.env.staging
+.env.production
+.env.test
+.env*.local
+*.pem
+*.key
+*.cert
+*.p12
+*.pfx
+*.sqlite
+*.db
 *.log
 .DS_Store
 coverage/
+uploads/
+storage/
 *.tsbuildinfo
 
 # Private/local docs

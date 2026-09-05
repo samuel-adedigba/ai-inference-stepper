@@ -3,6 +3,7 @@
 import 'dotenv/config';
 import { fileURLToPath } from 'url';
 import { initStepper } from '../index.js';
+import { assertProductionConfig } from '../config.js';
 import { logger } from '../logging.js';
 import { startWorker, stopWorker } from '../queue/worker.js';
 import { closeRedis } from '../cache/redisCache.js';
@@ -28,6 +29,7 @@ export async function startServer(options?: StartServerOptions): Promise<Running
   const providers = options?.init?.providers;
 
   const appConfig = initStepper({ config: overrides, providers });
+  assertProductionConfig(appConfig);
 
   const { default: app } = await import('./app.js');
   const port = options?.port ?? appConfig.server.port;
@@ -69,8 +71,8 @@ export async function startServer(options?: StartServerOptions): Promise<Running
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  startServer().catch((error) => {
-    logger.error({ error }, 'Failed to start server');
+  startServer().catch(() => {
+    logger.error({ errorCode: 'SERVER_START_FAILED' }, 'Failed to start server');
     process.exit(1);
   });
 }

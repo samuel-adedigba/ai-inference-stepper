@@ -21,6 +21,10 @@ function verifyWebhookSignature(payload: string, signature: string, secret: stri
     .update(payload)
     .digest('hex');
 
+  if (!/^[a-f0-9]+$/i.test(signature) || signature.length !== expectedSignature.length) {
+    return false;
+  }
+
   return crypto.timingSafeEqual(
     Buffer.from(signature, 'hex'),
     Buffer.from(expectedSignature, 'hex')
@@ -44,11 +48,11 @@ export async function handleCommitReportWebhook(req: Request, res: Response, nex
       });
     }
 
-    const webhookTime = parseInt(timestamp, 10);
+    const webhookTime = Number.parseInt(timestamp, 10);
     const now = Date.now();
     const maxAge = 5 * 60 * 1000;
 
-    if (Math.abs(now - webhookTime) > maxAge) {
+    if (!Number.isFinite(webhookTime) || Math.abs(now - webhookTime) > maxAge) {
       return res.status(400).json({
         error: 'Webhook timestamp is too old or too far in the future'
       });
@@ -66,7 +70,7 @@ export async function handleCommitReportWebhook(req: Request, res: Response, nex
     const payloadString = JSON.stringify(payload);
 
     if (!verifyWebhookSignature(payloadString, signature, webhookSecret)) {
-      logger.warn({ signature, timestamp }, 'Invalid webhook signature');
+      logger.warn({ timestamp }, 'Invalid webhook signature');
       return res.status(401).json({
         error: 'Invalid webhook signature'
       });
@@ -116,14 +120,14 @@ export async function handleCommitReportWebhook(req: Request, res: Response, nex
         });
 
         if (updateResponse.status < 200 || updateResponse.status >= 300) {
-          const errorText = typeof updateResponse.data === 'string'
-            ? updateResponse.data
-            : JSON.stringify(updateResponse.data) || 'Unable to read response';
           logger.error({
             jobId: reportPayload.jobId,
             status: updateResponse.status,
-            error: errorText
           }, 'Failed to update main API database');
+          return res.status(503).json({
+            success: false,
+            error: 'Webhook processing will be retried',
+          });
         } else {
           logger.info({
             jobId: reportPayload.jobId,
@@ -131,11 +135,15 @@ export async function handleCommitReportWebhook(req: Request, res: Response, nex
             repoId: reportPayload.repoId
           }, 'Successfully updated database with completed report');
         }
-      } catch (updateError) {
+      } catch {
         logger.error({
           jobId: reportPayload.jobId,
-          error: updateError instanceof Error ? updateError.message : String(updateError)
+          errorCode: 'INTERNAL_COMMIT_STATUS_UPDATE_FAILED',
         }, 'Error updating main API database');
+        return res.status(503).json({
+          success: false,
+          error: 'Webhook processing will be retried',
+        });
       }
     }
 
@@ -145,7 +153,7 @@ export async function handleCommitReportWebhook(req: Request, res: Response, nex
     });
   } catch (error) {
     logger.error({
-      error: error instanceof Error ? error.message : String(error)
+      errorCode: 'COMMIT_REPORT_WEBHOOK_FAILED',
     }, 'Error processing webhook');
 
     return next(error);

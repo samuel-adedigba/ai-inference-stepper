@@ -263,6 +263,8 @@ export interface StepperJobData<TPayload = unknown, TOutput = unknown> {
   cacheKey: string;
   priority?: number;
   callbackUrl?: string;
+  /** Non-reversible digest of the API key that created the HTTP job. */
+  ownerKey?: string;
 }
 
 /**
@@ -274,6 +276,7 @@ export interface ReportJobData {
   cacheKey: string;
   priority?: number;
   callbackUrl?: string;
+  ownerKey?: string;
 }
 
 /**

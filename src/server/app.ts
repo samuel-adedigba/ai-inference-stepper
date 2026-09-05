@@ -19,6 +19,9 @@ import { validateBatchEnvelope } from '../validation/batch.js';
 import { getRateLimitRedisClient, RedisRateLimitStore } from './redisRateLimitStore.js';
 
 const app: Application = express();
+const MAX_HTTP_REQUEST_BYTES = 1_000_000;
+const MAX_CALLBACKS = 5;
+const MAX_CALLBACK_HEADER_LENGTH = 512;
 
 // Trust proxy for proper IP detection behind reverse proxies (nginx, ELB, etc.)
 // Set to 1 for single proxy, true for any proxy, or specific IPs for security
@@ -75,7 +78,7 @@ if (config.security.cors.enabled) {
     },
     credentials: config.security.cors.allowCredentials,
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'X-Request-ID'],
+    allowedHeaders: ['Content-Type', 'Authorization', config.security.apiKey.headerName, 'X-Request-ID'],
     maxAge: 86400, // Cache preflight for 24 hours
   };
 
@@ -167,7 +170,7 @@ const userRateLimiter = async (req: Request, res: Response, next: NextFunction):
     }
   } catch (error) {
     // Do not fail open when the shared limiter cannot be reached.
-    logger.error({ error, path: req.path }, 'Distributed user rate limiter unavailable');
+    logger.error({ errorCode: 'DISTRIBUTED_RATE_LIMIT_UNAVAILABLE', path: req.path }, 'Distributed user rate limiter unavailable');
     res.status(503).json({ error: 'Rate limiter unavailable', message: 'Please retry shortly.' });
     return;
   }
@@ -189,7 +192,8 @@ const apiKeyAuth = (req: Request, res: Response, next: NextFunction) => {
   }
 
   const headerName = config.security.apiKey.headerName;
-  const providedKey = req.headers[headerName] as string;
+  const providedHeader = req.headers[headerName];
+  const providedKey = typeof providedHeader === 'string' ? providedHeader : null;
   const validKey = process.env.STEPPER_API_KEY;
 
   if (!validKey) {
@@ -230,7 +234,7 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function validateLegacyCommitInput(input: unknown): string | null {
@@ -258,6 +262,17 @@ function validateGenericRequest(request: unknown): GenericRequestValidation {
   if (!promptIsValid) {
     return { valid: false, error: 'Invalid prompt: expected string or preset prompt object' };
   }
+  if (typeof prompt === 'string' && prompt.length > 100_000) {
+    return { valid: false, error: 'Prompt is too large' };
+  }
+
+  try {
+    if (Buffer.byteLength(JSON.stringify(request), 'utf8') > MAX_HTTP_REQUEST_BYTES) {
+      return { valid: false, error: 'Request payload is too large' };
+    }
+  } catch {
+    return { valid: false, error: 'Request payload is invalid' };
+  }
 
   if (request.responseMode !== undefined && request.responseMode !== 'json' && request.responseMode !== 'text') {
     return { valid: false, error: "Invalid responseMode: expected 'json' or 'text'" };
@@ -277,8 +292,14 @@ function validateGenericRequest(request: unknown): GenericRequestValidation {
   }
 
   for (const field of ['preferredProviders', 'excludeProviders'] as const) {
-    if (request[field] !== undefined && (!Array.isArray(request[field]) || !request[field].every((name) => typeof name === 'string' && name.trim().length > 0))) {
+    if (request[field] !== undefined && (!Array.isArray(request[field]) || request[field].length > 20 || !request[field].every((name) => typeof name === 'string' && name.trim().length > 0 && name.length <= 100))) {
       return { valid: false, error: `Invalid ${field}: expected an array of non-empty provider names` };
+    }
+  }
+
+  for (const field of ['tenantId', 'requestId', 'cacheKey'] as const) {
+    if (request[field] !== undefined && (typeof request[field] !== 'string' || request[field].length > 256)) {
+      return { valid: false, error: `Invalid ${field}: expected a string up to 256 characters` };
     }
   }
 
@@ -305,12 +326,33 @@ function validateGenericRequest(request: unknown): GenericRequestValidation {
   }
 
   if (request.providers !== undefined) {
-    if (!Array.isArray(request.providers)) {
-      return { valid: false, error: 'Invalid providers: expected array' };
+    // Provider configs can contain API keys and arbitrary base URLs. They are
+    // valid for the in-process library API, but never accepted from HTTP JSON.
+    return { valid: false, error: 'Provider configuration is not accepted over HTTP' };
+  }
+
+  if (request.callbacks !== undefined) {
+    if (!Array.isArray(request.callbacks) || request.callbacks.length > MAX_CALLBACKS) {
+      return { valid: false, error: `Invalid callbacks: expected at most ${MAX_CALLBACKS} entries` };
     }
-    for (const provider of request.providers) {
-      if (!isRecord(provider) || typeof provider.name !== 'string') {
-        return { valid: false, error: 'Invalid providers entry: each provider must include a string name' };
+    for (const callback of request.callbacks) {
+      if (!isRecord(callback) || typeof callback.url !== 'string' || callback.url.length > 2048) {
+        return { valid: false, error: 'Invalid callback: expected a URL up to 2048 characters' };
+      }
+      if (callback.headers !== undefined) {
+        if (!isRecord(callback.headers) || Object.keys(callback.headers).length > 20
+          || Object.values(callback.headers).some((value) => typeof value !== 'string' || value.length > MAX_CALLBACK_HEADER_LENGTH)) {
+          return { valid: false, error: 'Invalid callback headers' };
+        }
+      }
+      if (callback.retry !== undefined) {
+        const retry = callback.retry;
+        const maxAttempts = isRecord(retry) ? retry.maxAttempts : undefined;
+        const backoffMs = isRecord(retry) ? retry.backoffMs : undefined;
+        if (typeof maxAttempts !== 'number' || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5
+          || typeof backoffMs !== 'number' || !Number.isInteger(backoffMs) || backoffMs < 0 || backoffMs > 60_000) {
+          return { valid: false, error: 'Invalid callback retry settings' };
+        }
       }
     }
   }
@@ -368,18 +410,20 @@ function validateBatchRequest(value: unknown):
 }
 
 function extractRateLimitKey(req: Request): string | null {
-  // Keep legacy userId support, but prefer generic tenantId when present.
-  const tenantId = typeof req.body?.tenantId === 'string' ? req.body.tenantId : null;
-  if (tenantId) {
-    return `tenant:${tenantId}`;
-  }
+  // A caller-controlled tenant/user field is not an identity boundary: changing
+  // it must not create a fresh quota bucket. Bind the quota to the credential.
+  if (!config.security.apiKey.enabled) return null;
+  const providedKey = req.headers[config.security.apiKey.headerName];
+  if (typeof providedKey !== 'string' || providedKey.length === 0) return null;
+  return `api-key:${createHash('sha256').update(providedKey).digest('hex')}`;
+}
 
-  const userId = typeof req.body?.userId === 'string' ? req.body.userId : null;
-  if (userId) {
-    return `user:${userId}`;
-  }
-
-  return null;
+function getApiKeyOwnerKey(req: Request): string | undefined {
+  if (!config.security.apiKey.enabled) return undefined;
+  const providedKey = req.headers[config.security.apiKey.headerName];
+  return typeof providedKey === 'string' && providedKey.length > 0
+    ? createHash('sha256').update(providedKey).digest('hex')
+    : undefined;
 }
 
 // API ROUTES
@@ -389,7 +433,7 @@ function extractRateLimitKey(req: Request): string | null {
  * Webhook endpoint for report completion notifications
  * This endpoint bypasses API key auth but uses webhook signature verification
  */
-app.post('/webhook/report-completion', express.json({ limit: '10mb' }), async (req: Request, res: Response, next: NextFunction) => {
+app.post('/webhook/report-completion', express.json({ limit: MAX_HTTP_REQUEST_BYTES }), async (req: Request, res: Response, next: NextFunction) => {
   return handleCommitReportWebhook(req, res, next);
 });
 
@@ -401,7 +445,7 @@ if (config.security.apiKey.enabled) {
 }
 
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: MAX_HTTP_REQUEST_BYTES }));
 
 // REQUEST LOGGING
 
@@ -420,9 +464,21 @@ app.use((req, res, next) => {
   next();
 });
 
-async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: number; body: Record<string, unknown> }> {
-  const job = await getJob(jobId);
+async function buildJobStatusResponse(jobId: string, ownerKey?: string): Promise<{ statusCode: number; body: Record<string, unknown> }> {
+  const job = await getJob(jobId, { includeData: true });
   if (!job) {
+    return { statusCode: 404, body: { error: 'Job not found' } };
+  }
+
+  const jobData = job.data as {
+    request?: StepperRequest<unknown, unknown>;
+    input?: PromptInput;
+    cacheKey?: string;
+    ownerKey?: string;
+  } | undefined;
+  // Job IDs are bearer capabilities only when API-key auth is disabled. In
+  // authenticated HTTP mode, bind reads to the credential that created them.
+  if (config.security.apiKey.enabled && (!ownerKey || jobData?.ownerKey !== ownerKey)) {
     return { statusCode: 404, body: { error: 'Job not found' } };
   }
 
@@ -440,7 +496,6 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
     response.progress = job.progress;
   }
 
-  const jobData = job.data as { request?: StepperRequest<unknown, unknown>; input?: PromptInput; cacheKey?: string } | undefined;
   const cached = (job.state === 'completed' || job.state === 'failed') && !job.result && jobData?.cacheKey
     ? await getReportCache(jobData.cacheKey)
     : null;
@@ -463,17 +518,17 @@ async function buildJobStatusResponse(jobId: string): Promise<{ statusCode: numb
     const cleanupInput = requestInput || legacyInput;
 
     if (cleanupInput?.userId && cleanupInput.commitSha) {
-      deleteReport(cleanupInput.userId, cleanupInput.commitSha, cleanupInput.template).catch(err => {
-        logger.error({ err, jobId }, 'Failed to auto-cleanup cache after polling');
+      deleteReport(cleanupInput.userId, cleanupInput.commitSha, cleanupInput.template, ownerKey).catch(() => {
+        logger.error({ errorCode: 'CACHE_AUTO_CLEANUP_FAILED', jobId }, 'Failed to auto-cleanup cache after polling');
       });
     }
   }
 
   if (job.state === 'failed' && job.failedReason) {
-    response.error = job.failedReason;
+    response.error = 'Generation failed';
     const failure: JobFailure = cached?.failure || {
       errorCode: 'UNKNOWN',
-      message: job.failedReason,
+      message: 'Generation failed. Retry later.',
       retryable: false,
     };
     response.failure = failure;
@@ -495,7 +550,7 @@ app.post('/v1/generate', userRateLimiter, async (req: Request, res: Response, ne
       return res.status(400).json({ error: validation.error, errorCode: validation.errorCode, supportedVersion: validation.supportedVersion });
     }
 
-    const result = await enqueueRequest(validation.request);
+    const result = await enqueueRequest(validation.request, { ownerKey: getApiKeyOwnerKey(req) });
 
     if (result.status === 200) {
       return res.status(200).json({
@@ -539,7 +594,7 @@ app.post('/v1/generate/batch', userRateLimiter, async (req: Request, res: Respon
       });
     }
 
-    const jobId = await enqueueBatchJob(validation.batch);
+    const jobId = await enqueueBatchJob(validation.batch, { ownerKey: getApiKeyOwnerKey(req) });
     return res.status(202).json({
       status: 'queued',
       jobId,
@@ -590,7 +645,7 @@ app.post('/v1/generate/immediate', userRateLimiter, async (req: Request, res: Re
 app.get('/v1/jobs/:jobId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const response = await buildJobStatusResponse(jobId);
+    const response = await buildJobStatusResponse(jobId, getApiKeyOwnerKey(req));
     return res.status(response.statusCode).json(response.body);
   } catch (error) {
     return next(error);
@@ -630,7 +685,7 @@ app.post('/v1/reports', userRateLimiter, async (req: Request, res: Response, nex
       });
     }
 
-    const result = await enqueueReport(input);
+    const result = await enqueueReport(input, { ownerKey: getApiKeyOwnerKey(req) });
 
     if (result.status === 200) {
       return res.status(200).json({
@@ -695,7 +750,7 @@ app.post('/v1/reports/immediate', userRateLimiter, async (req: Request, res: Res
 app.get('/v1/reports/:jobId', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { jobId } = req.params;
-    const response = await buildJobStatusResponse(jobId);
+    const response = await buildJobStatusResponse(jobId, getApiKeyOwnerKey(req));
     return res.status(response.statusCode).json(response.body);
   } catch (error) {
     return next(error);
@@ -707,19 +762,15 @@ app.get('/v1/reports/:jobId', async (req: Request, res: Response, next: NextFunc
  * Manually purge a report from cache. 
  * Use this after saving the result to your primary database.
  */
-app.delete('/v1/reports', async (req: Request, res: Response, next: NextFunction) => {
+app.delete('/v1/reports', async (_req: Request, res: Response, next: NextFunction) => {
   try {
-    const { userId, commitSha, template } = req.query;
+    // The legacy key is derived from caller-supplied userId/commitSha and cannot
+    // be safely bound to the authenticated API key. Keep deletion available to
+    // trusted in-process callers via deleteReport(), but refuse the HTTP form.
+    return res.status(403).json({
+      error: 'Cache deletion is only available through the trusted library API',
+    });
 
-    if (!userId || !commitSha) {
-      return res.status(400).json({
-        error: 'Missing required query parameters: userId, commitSha',
-      });
-    }
-
-    await deleteReport(userId as string, commitSha as string, template as string);
-
-    return res.status(200).json({ success: true, message: 'Cache entry deleted' });
   } catch (error) {
     return next(error);
   }
@@ -787,11 +838,10 @@ app.get('/', (_req: Request, res: Response) => {
 // ERROR HANDLER
 // =============================================================================
 
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  logger.error({ err }, 'Unhandled error');
+app.use((_err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  logger.error({ errorCode: 'UNHANDLED_SERVER_ERROR' }, 'Unhandled error');
   res.status(500).json({
     error: 'Internal server error',
-    message: err.message,
   });
 });
 

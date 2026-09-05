@@ -16,19 +16,24 @@ import { logger } from './logging.js';
 import {
     getReportCache,
     buildRequestCacheKey,
+    scopeCacheKeyToOwner,
+    claimDehydrated,
     setDehydrated,
+    claimStaleRefresh,
     isHydratedFresh,
     isStaleButUsable,
     deleteCacheEntry,
+    releaseDehydratedClaim,
 } from './cache/redisCache.js';
 import { enqueueBatchJob, enqueueRequestJob, getJobStatus } from './queue/producer.js';
 import { generateReportNow, generateRequestNow, registerCallbacks as registerOrchestratorCallbacks, initializeProviders, getProviderHealth } from './stepper/orchestrator.js';
 import { recordCacheHit, recordCacheMiss } from './metrics/metrics.js';
-import { applyConfigOverrides, config } from './config.js';
+import { applyConfigOverrides, assertRuntimeConfig, config } from './config.js';
 import { createCommitReportRequest, toCommitReportInput } from './presets/commit-report/request.js';
 import { buildCommitReportCacheKey, buildCommitReportCacheKeyFromParts } from './presets/commit-report/cacheKey.js';
 import { LEGACY_COMMIT_REPORT_API_DEPRECATION } from './deprecations.js';
 import { validateBatchEnvelope } from './validation/batch.js';
+import { randomUUID } from 'node:crypto';
 
 let isInitialized = false;
 const emittedLegacyApiWarnings = new Set<string>();
@@ -72,6 +77,7 @@ export function initStepper(options?: { config?: StepperConfigOverrides<StepperC
     }
 
     const nextConfig = applyConfigOverrides(overrides);
+    assertRuntimeConfig(nextConfig);
     initializeProviders(nextConfig.providers);
     isInitialized = true;
     return nextConfig;
@@ -108,9 +114,11 @@ type EnqueueResult<TOutput> =
       }
     | { status: 202; jobId: string; cached: false };
 
-type EnqueueOptions = {
+export type EnqueueOptions = {
     priority?: number;
     callbackUrl?: string;
+    /** Internal HTTP ownership binding; never expose this value in responses. */
+    ownerKey?: string;
 };
 
 function getRequestMetricsContext(request: StepperRequest<unknown, unknown>): { preset: 'commit-report' | 'generic'; responseMode: 'json' | 'text' } {
@@ -140,8 +148,8 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
             recordCacheHit('fresh', context);
             logger.info({ cacheKey, ...logMeta }, 'Cache hit (fresh), returning and clearing');
 
-            deleteCacheEntry(cacheKey).catch(err => {
-                logger.error({ err, cacheKey }, 'Failed to cleanup cache after fresh hit');
+            deleteCacheEntry(cacheKey).catch(() => {
+                logger.error({ errorCode: 'CACHE_CLEANUP_FAILED', cacheKey }, 'Failed to cleanup cache after fresh hit');
             });
 
             return {
@@ -159,9 +167,22 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
             recordCacheHit('stale', context);
             logger.info({ cacheKey, ...logMeta }, 'Cache hit (stale), scheduling refresh');
 
-            enqueueRequestJob(request, cacheKey, { ...options, priority: 10 }).catch((err) => {
-                logger.error({ err, cacheKey }, 'Failed to enqueue background refresh');
-            });
+            const refreshJobId = randomUUID();
+            claimStaleRefresh(cacheKey, refreshJobId, cached.timestamps.updated)
+                .then(async (claim) => {
+                    if (claim.state !== 'claimed') return;
+                    try {
+                        await enqueueRequestJob(request, cacheKey, { ...options, priority: 10, jobId: refreshJobId });
+                    } catch (error) {
+                        await releaseDehydratedClaim(cacheKey, refreshJobId).catch(() => {
+                            logger.error({ errorCode: 'CACHE_REFRESH_CLAIM_RELEASE_FAILED', cacheKey }, 'Failed to release refresh claim');
+                        });
+                        throw error;
+                    }
+                })
+                .catch(() => {
+                    logger.error({ errorCode: 'CACHE_REFRESH_ENQUEUE_FAILED', cacheKey }, 'Failed to enqueue background refresh');
+                });
 
             return {
                 status: 200,
@@ -179,8 +200,59 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
     recordCacheMiss(context);
     logger.info({ cacheKey, ...logMeta }, 'Cache miss, enqueueing job');
 
-    const jobId = await enqueueRequestJob(request, cacheKey, options);
-    await setDehydrated(cacheKey, jobId);
+    const proposedJobId = randomUUID();
+    if (request.cacheControl === 'no-cache' || request.cacheControl === 'refresh') {
+        // These modes explicitly request a new generation and therefore opt out
+        // of cache-key deduplication by contract.
+        const jobId = await enqueueRequestJob(request, cacheKey, { ...options, jobId: proposedJobId });
+        return { status: 202, jobId, cached: false };
+    }
+
+    // Reserve the key before queue insertion. This is a distributed idempotency
+    // gate for multiple Stepper instances sharing Redis.
+    let claim: Awaited<ReturnType<typeof claimDehydrated>>;
+    try {
+        claim = await claimDehydrated(cacheKey, proposedJobId);
+    } catch (error) {
+        // Local/library development may intentionally run without Redis. Keep
+        // that mode usable, while production fails closed to avoid duplicate
+        // provider spend when the idempotency gate is unavailable.
+        if (process.env.NODE_ENV === 'production') throw error;
+        logger.warn({ cacheKey }, 'Cache claim unavailable outside production; queueing without distributed deduplication');
+        const jobId = await enqueueRequestJob(request, cacheKey, { ...options, jobId: proposedJobId });
+        await setDehydrated(cacheKey, jobId).catch(() => undefined);
+        return { status: 202, jobId, cached: false };
+    }
+    if (claim.state === 'existing' && claim.jobId) {
+        return { status: 202, jobId: claim.jobId, cached: false };
+    }
+    if (claim.state === 'hydrated') {
+        // Another worker completed the request between the initial read and the
+        // claim. Re-read rather than paying for a second provider call.
+        const completed = await getReportCache(cacheKey);
+        if (completed?.status === 'hydrated' && completed.result !== undefined) {
+            return {
+                status: 200,
+                data: completed.result as TOutput,
+                cached: true,
+                usedProvider: completed.usedProvider || (completed.fallback ? 'fallback' : 'cache'),
+                fallback: completed.fallback || false,
+                validated: completed.validated ?? !completed.fallback,
+                timings: completed.timings || { totalMs: 0 },
+            };
+        }
+        throw new Error('Cache claim lost before queue insertion; retry request');
+    }
+
+    let jobId: string;
+    try {
+        jobId = await enqueueRequestJob(request, cacheKey, { ...options, jobId: proposedJobId });
+    } catch (error) {
+        await releaseDehydratedClaim(cacheKey, proposedJobId).catch(() => {
+            logger.error({ errorCode: 'CACHE_CLAIM_RELEASE_FAILED', cacheKey }, 'Failed to release cache claim after queue failure');
+        });
+        throw error;
+    }
 
     return { status: 202, jobId, cached: false };
 }
@@ -188,50 +260,50 @@ async function enqueueRequestInternal<TPayload = unknown, TOutput = unknown>(
 /**
  * Internal legacy enqueue path kept stable during the generic migration.
  */
-async function enqueueCommitReportInternal(input: PromptInput): Promise<EnqueueResult<ReportOutput>> {
+async function enqueueCommitReportInternal(input: PromptInput, options: EnqueueOptions = {}): Promise<EnqueueResult<ReportOutput>> {
     const request = createCommitReportRequest(input);
-    const cacheKey = buildCommitReportCacheKey(input);
+    const cacheKey = scopeCacheKeyToOwner(buildCommitReportCacheKey(input), options.ownerKey);
     const context = getRequestMetricsContext(request);
     return enqueueRequestInternal(request, cacheKey, context, {
         userId: input.userId,
         commitSha: input.commitSha,
         requestId: request.requestId,
-    }, {
-        callbackUrl: input.callbackUrl,
-    });
+    }, { ...options, callbackUrl: input.callbackUrl });
 }
 
 /**
  * Enqueue a generic Stepper request.
  */
 export async function enqueueRequest<TPayload = unknown, TOutput = unknown>(
-    request: StepperRequest<TPayload, TOutput>
+    request: StepperRequest<TPayload, TOutput>,
+    options?: EnqueueOptions,
 ): Promise<EnqueueResult<TOutput>>;
-export async function enqueueRequest(input: PromptInput): Promise<EnqueueResult<ReportOutput>>;
+export async function enqueueRequest(input: PromptInput, options?: EnqueueOptions): Promise<EnqueueResult<ReportOutput>>;
 export async function enqueueRequest<TPayload = unknown, TOutput = unknown>(
-    requestOrInput: StepperRequest<TPayload, TOutput> | PromptInput
+    requestOrInput: StepperRequest<TPayload, TOutput> | PromptInput,
+    options: EnqueueOptions = {},
 ): Promise<EnqueueResult<TOutput | ReportOutput>> {
     if ('userId' in requestOrInput && 'commitSha' in requestOrInput) {
         // Compatibility branch for callers still passing PromptInput directly.
         warnLegacyApiOnce('enqueueRequest(PromptInput)', 'enqueueRequest(createCommitReportRequest(input))');
-        return enqueueCommitReportInternal(requestOrInput);
+        return enqueueCommitReportInternal(requestOrInput, options);
     }
 
     const request = requestOrInput as StepperRequest<TPayload, TOutput>;
     const context = getRequestMetricsContext(request);
-    const cacheKey = buildRequestCacheKey(request);
+    const cacheKey = buildRequestCacheKey(request, options.ownerKey);
 
     return enqueueRequestInternal(request, cacheKey, context, {
         requestId: request.requestId,
         tenantId: request.tenantId,
-    });
+    }, options);
 }
 
 /**
  * Enqueue independently identified generic requests as one bounded-concurrency job.
  * Results retain the input order and item IDs.
  */
-export async function enqueueBatch(batch: StepperBatchRequest): Promise<{
+export async function enqueueBatch(batch: StepperBatchRequest, options: { ownerKey?: string } = {}): Promise<{
     status: 202;
     jobId: string;
     itemCount: number;
@@ -268,7 +340,7 @@ export async function enqueueBatch(batch: StepperBatchRequest): Promise<{
         requestId: envelope.batch.requestId,
         items,
         concurrency,
-    });
+    }, options);
     return { status: 202, jobId, itemCount: items.length, concurrency };
 }
 
@@ -303,14 +375,15 @@ export async function enqueueBatch(batch: StepperBatchRequest): Promise<{
  * Planned removal target: v2.0.0.
  */
 export async function enqueueReport(
-    input: PromptInput
+    input: PromptInput,
+    options?: EnqueueOptions,
 ): Promise<EnqueueResult<ReportOutput>> {
     // Compatibility wrapper to preserve the existing CommitDiary contract.
     warnLegacyApiOnce(
         'enqueueReport',
         LEGACY_COMMIT_REPORT_API_DEPRECATION.replacementApis.enqueueReport
     );
-    return enqueueCommitReportInternal(input);
+    return enqueueCommitReportInternal(input, options);
 }
 
 /**
@@ -380,7 +453,7 @@ export async function generateReport(input: PromptInput): Promise<ProviderResult
  * @param jobId - Job identifier returned from enqueueReport
  * @returns Job status information or null if not found
  */
-export async function getJob(jobId: string): Promise<{
+export async function getJob(jobId: string, options: { includeData?: boolean } = {}): Promise<{
     id: string;
     state: string;
     progress?: unknown;
@@ -388,29 +461,34 @@ export async function getJob(jobId: string): Promise<{
     failedReason?: string;
     data?: unknown;
 } | null> {
-    return getJobStatus(jobId);
+    return getJobStatus(jobId, options);
 }
 
 /**
  * Delete a cached report entry.
- * 
+ *
  * Call this once you have successfully saved the report to your own database
  * to keep the Stepper's Redis storage footprint minimal.
- * 
+ *
+ * Pass the same `ownerKey` used at enqueue time so the scoped entry is
+ * removed. Omitting it deletes only the legacy unscoped key (in-process
+ * single-tenant callers).
+ *
  * @param userId - User identifier
  * @param commitSha - Commit SHA
  * @param template - Template name (optional)
+ * @param ownerKey - Non-reversible digest of the API key that created the job (optional)
  */
 /**
  * @deprecated Use preset cache helpers and generic cache lifecycle APIs.
  * Planned removal target: v2.0.0.
  */
-export async function deleteReport(userId: string, commitSha: string, template?: string): Promise<void> {
+export async function deleteReport(userId: string, commitSha: string, template?: string, ownerKey?: string): Promise<void> {
     warnLegacyApiOnce(
         'deleteReport',
         LEGACY_COMMIT_REPORT_API_DEPRECATION.replacementApis.deleteReport
     );
-    const cacheKey = buildCommitReportCacheKeyFromParts(userId, commitSha, template);
+    const cacheKey = scopeCacheKeyToOwner(buildCommitReportCacheKeyFromParts(userId, commitSha, template), ownerKey);
     await deleteCacheEntry(cacheKey);
 }
 

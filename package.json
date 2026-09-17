@@ -110,14 +110,5 @@
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ],
-    "ignoredBuiltDependencies": [
-      "@parcel/watcher",
-      "msgpackr-extract"
-    ]
   }
 }

@@ -65,7 +65,7 @@ async function deliverSingleCallback(
 
       log.warn({ attempt, statusCode: response.status }, 'Callback delivery failed with non-OK response');
       return { url: callback.url, success: false, statusCode: response.status };
-    } catch (error) {
+    } catch {
       if (attempt < maxAttempts) {
         const delay = backoffMs * Math.pow(2, attempt - 1);
         log.warn(

@@ -99,14 +99,15 @@
     "@types/node": "^20.11.5",
     "@types/opossum": "^8.1.9",
     "@types/uuid": "^9.0.8",
-    "@typescript-eslint/eslint-plugin": "^6.19.0",
-    "@typescript-eslint/parser": "^6.19.0",
+    "@typescript-eslint/eslint-plugin": "^8.70.0",
+    "@typescript-eslint/parser": "^8.70.0",
     "eslint": "^8.56.0",
     "ioredis-mock": "^8.13.1",
     "nock": "^13.5.6",
     "tsx": "^4.7.0",
     "typescript": "^5.3.3",
-    "vitest": "^1.6.1"
+    "vite": "^6.4.3",
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=18.0.0"

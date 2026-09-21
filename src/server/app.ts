@@ -168,7 +168,7 @@ const userRateLimiter = async (req: Request, res: Response, next: NextFunction):
       });
       return;
     }
-  } catch (error) {
+  } catch {
     // Do not fail open when the shared limiter cannot be reached.
     logger.error({ errorCode: 'DISTRIBUTED_RATE_LIMIT_UNAVAILABLE', path: req.path }, 'Distributed user rate limiter unavailable');
     res.status(503).json({ error: 'Rate limiter unavailable', message: 'Please retry shortly.' });

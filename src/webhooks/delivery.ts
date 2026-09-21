@@ -97,7 +97,7 @@ export async function sendWebhook(
             error: `Webhook returned HTTP ${response.status}`
         };
 
-    } catch (error) {
+    } catch {
         log.error({ errorCode: 'WEBHOOK_NETWORK_ERROR', attempt }, 'Webhook delivery error');
 
         // Retry on network errors

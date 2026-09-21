@@ -36,4 +36,24 @@ describe('secure runtime defaults', () => {
     expect(loaded.security.apiKey.enabled).toBe(false);
     expect(loaded.security.cors.allowedOrigins).toEqual(['*']);
   });
+
+  it('rejects plaintext Redis in production without an explicit private-network opt-in', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.REDIS_URL = 'redis://private-redis:6379';
+    delete process.env.REDIS_ALLOW_PLAINTEXT_PRIVATE_NETWORK;
+    vi.resetModules();
+
+    const { assertRuntimeConfig, loadConfig } = await import('../../src/config.js');
+    expect(() => assertRuntimeConfig(loadConfig())).toThrow('Redis TLS is required in production');
+  });
+
+  it('allows plaintext Redis in production only with the private-network opt-in', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.REDIS_URL = 'redis://private-redis:6379';
+    process.env.REDIS_ALLOW_PLAINTEXT_PRIVATE_NETWORK = 'true';
+    vi.resetModules();
+
+    const { assertRuntimeConfig, loadConfig } = await import('../../src/config.js');
+    expect(() => assertRuntimeConfig(loadConfig())).not.toThrow();
+  });
 });

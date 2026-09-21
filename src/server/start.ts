@@ -71,8 +71,8 @@ export async function startServer(options?: StartServerOptions): Promise<Running
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  startServer().catch(() => {
-    logger.error({ errorCode: 'SERVER_START_FAILED' }, 'Failed to start server');
+  startServer().catch((error: unknown) => {
+    logger.error({ err: error, errorCode: 'SERVER_START_FAILED' }, 'Failed to start server');
     process.exit(1);
   });
 }

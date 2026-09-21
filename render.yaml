@@ -15,6 +15,9 @@ services:
         value: 3001
       - key: REDIS_URL
         sync: false
+      # Render's internal Key Value URL uses redis:// on its private network.
+      - key: REDIS_ALLOW_PLAINTEXT_PRIVATE_NETWORK
+        value: "true"
       - key: API_KEY_ENABLED
         value: "true"
       - key: STEPPER_API_KEY

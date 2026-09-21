@@ -296,8 +296,12 @@ export function assertRuntimeConfig(config: StepperConfig): void {
     throw new Error('REDIS_URL must be a valid redis:// or rediss:// URL');
   }
   if (!['redis:', 'rediss:'].includes(redisProtocol)
-    || (process.env.NODE_ENV === 'production' && redisProtocol !== 'rediss:')) {
-    throw new Error('Redis TLS is required in production');
+    || (process.env.NODE_ENV === 'production'
+      && redisProtocol !== 'rediss:'
+      && process.env.REDIS_ALLOW_PLAINTEXT_PRIVATE_NETWORK !== 'true')) {
+    throw new Error(
+      'Redis TLS is required in production unless REDIS_ALLOW_PLAINTEXT_PRIVATE_NETWORK=true is explicitly set'
+    );
   }
   if (config.security.cors.allowCredentials && config.security.cors.allowedOrigins.includes('*')) {
     throw new Error('Credentialed CORS cannot use a wildcard origin');

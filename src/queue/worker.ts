@@ -25,6 +25,24 @@ import { StepperBatchQueueJobData } from './producer.js';
 let worker: Worker<StepperJobData<unknown, unknown>> | null = null;
 let batchWorker: Worker<StepperBatchQueueJobData> | null = null;
 
+function handleWorkerSystemError(error: Error, queueType: 'single' | 'batch'): void {
+    const errorCode = typeof (error as NodeJS.ErrnoException).code === 'string'
+        ? (error as NodeJS.ErrnoException).code
+        : 'WORKER_SYSTEM_ERROR';
+
+    logger.error({
+        err: error,
+        errorCode,
+        queueType,
+    }, 'Worker error');
+    void sendDiscordAlert({
+        title: 'Worker System Error',
+        message: `The ${queueType} job queue worker encountered a system error.`,
+        severity: 'critical',
+        metadata: { errorCode, queueType }
+    });
+}
+
 function getFailure(error: unknown): JobFailure {
     const transientProviderErrors: ProviderErrorType[] = [
         ProviderErrorType.RateLimit,
@@ -360,15 +378,8 @@ export function startWorker(): void {
         }
     });
 
-    worker.on('error', (_err) => {
-        logger.error({ errorCode: 'WORKER_SYSTEM_ERROR' }, 'Worker error');
-        void sendDiscordAlert({
-            title: 'Worker System Error',
-            message: 'The job queue worker encountered a system error.',
-            severity: 'critical',
-            metadata: { errorCode: 'WORKER_SYSTEM_ERROR' }
-        });
-    });
+    worker.on('error', (error) => handleWorkerSystemError(error, 'single'));
+    batchWorker.on('error', (error) => handleWorkerSystemError(error, 'batch'));
 
     logger.info({ concurrency: config.queue.concurrency, batchConcurrency: config.batch.queueConcurrency }, 'Workers started');
 }

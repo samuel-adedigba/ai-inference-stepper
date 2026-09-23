@@ -78,6 +78,26 @@ export function loadConfig(): StepperConfig {
   // Provider configurations: Rules for how we talk to each AI
   const providers: ProviderConfig[] = [
     {
+      name: 'qorebit-qwen',
+      enabled: process.env.QOREBIT_QWEN_ENABLED === 'true',
+      baseUrl: process.env.QOREBIT_BASE_URL || 'https://api.qorebit.ai',
+      modelName: process.env.QOREBIT_QWEN_MODEL || 'alibaba/qwen3-coder-flash',
+      apiKeyEnvVar: 'QOREBIT_API_KEY',
+      rateLimitRPM: parseInt(process.env.QOREBIT_QWEN_RPM || '10', 10),
+      concurrency: parseInt(process.env.QOREBIT_QWEN_CONCURRENCY || '2', 10),
+      timeout: parseInt(process.env.QOREBIT_QWEN_TIMEOUT || '60000', 10),
+    },
+    {
+      name: 'qorebit-deepseek',
+      enabled: process.env.QOREBIT_DEEPSEEK_ENABLED === 'true',
+      baseUrl: process.env.QOREBIT_BASE_URL || 'https://api.qorebit.ai',
+      modelName: process.env.QOREBIT_DEEPSEEK_MODEL || 'deepseek/deepseek-v3',
+      apiKeyEnvVar: 'QOREBIT_API_KEY',
+      rateLimitRPM: parseInt(process.env.QOREBIT_DEEPSEEK_RPM || '10', 10),
+      concurrency: parseInt(process.env.QOREBIT_DEEPSEEK_CONCURRENCY || '2', 10),
+      timeout: parseInt(process.env.QOREBIT_DEEPSEEK_TIMEOUT || '60000', 10),
+    },
+    {
       name: 'nvidia-llama',
       enabled: process.env.NVIDIA_LLAMA_ENABLED === 'true',
       baseUrl: process.env.NVIDIA_LLAMA_BASE_URL || process.env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1',

@@ -13,6 +13,7 @@ import {
 import { openaiProviderSpec } from './openai.js';
 import { openrouterProviderSpec } from './openrouter.js';
 import { perplexityProviderSpec } from './perplexity.js';
+import { qorebitDeepseekProviderSpec, qorebitQwenProviderSpec } from './qorebit.js';
 import { togetherProviderSpec } from './together.js';
 
 export const providerSpecsByName: Record<string, ProviderSpec> = {
@@ -29,4 +30,6 @@ export const providerSpecsByName: Record<string, ProviderSpec> = {
   'nvidia-dracarys': nvidiaDracarysProviderSpec,
   perplexity: perplexityProviderSpec,
   together: togetherProviderSpec,
+  'qorebit-qwen': qorebitQwenProviderSpec,
+  'qorebit-deepseek': qorebitDeepseekProviderSpec,
 };

@@ -41,4 +41,23 @@ describe('Provider registry validation', () => {
     expect(validation.valid).toBe(false);
     expect(validation.reason).toContain('baseUrl');
   });
+
+  it('accepts Qorebit model lanes with the shared API key', () => {
+    const validation = validateProviderConfig({
+      name: 'qorebit-qwen', enabled: true, apiKey: 'qb_test_key',
+      concurrency: 2, timeout: 60000, rateLimitRPM: 10,
+    });
+
+    expect(validation.valid).toBe(true);
+  });
+
+  it('rejects Qorebit model lanes when the shared API key is missing', () => {
+    const validation = validateProviderConfig({
+      name: 'qorebit-deepseek', enabled: true,
+      concurrency: 2, timeout: 60000, rateLimitRPM: 10,
+    });
+
+    expect(validation.valid).toBe(false);
+    expect(validation.reason).toContain('QOREBIT_API_KEY');
+  });
 });

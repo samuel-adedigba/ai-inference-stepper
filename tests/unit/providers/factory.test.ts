@@ -90,6 +90,20 @@ describe('Provider Factory', () => {
             expect(adapter?.name).toBe('cohere');
         });
 
+        it('should create adapters for Qorebit model lanes', () => {
+            const qwenAdapter = createProviderAdapter({
+                name: 'qorebit-qwen', enabled: true, apiKeyEnvVar: 'QOREBIT_API_KEY',
+                modelName: 'alibaba/qwen3-coder-flash', timeout: 60000, rateLimitRPM: 10, concurrency: 2,
+            });
+            const deepseekAdapter = createProviderAdapter({
+                name: 'qorebit-deepseek', enabled: true, apiKeyEnvVar: 'QOREBIT_API_KEY',
+                modelName: 'deepseek/deepseek-v3', timeout: 60000, rateLimitRPM: 10, concurrency: 2,
+            });
+
+            expect(qwenAdapter?.name).toBe('qorebit-qwen');
+            expect(deepseekAdapter?.name).toBe('qorebit-deepseek');
+        });
+
         it('should return undefined for unknown provider without spec', () => {
             const config: ProviderConfig = {
                 name: 'unknown-provider',

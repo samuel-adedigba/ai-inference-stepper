@@ -59,6 +59,16 @@ const fixtures: ProviderFixture[] = [
     spec: providerSpecsByName.together,
     sampleResponse: { choices: [{ message: { content: 'together-response' } }] },
   },
+  {
+    name: 'qorebit-qwen',
+    spec: providerSpecsByName['qorebit-qwen'],
+    sampleResponse: { choices: [{ message: { content: 'qorebit-qwen-response' } }] },
+  },
+  {
+    name: 'qorebit-deepseek',
+    spec: providerSpecsByName['qorebit-deepseek'],
+    sampleResponse: { choices: [{ message: { content: 'qorebit-deepseek-response' } }] },
+  },
 ];
 
 describe('Provider Catalog Specs', () => {
@@ -80,6 +90,10 @@ describe('Provider Catalog Specs', () => {
       expect(headers['Content-Type']).toBe('application/json');
       expect(body).toBeTypeOf('object');
       expect(spec.parseResponse(sampleResponse)).toContain('response');
+
+      if (name.startsWith('qorebit-')) {
+        expect(body.max_tokens).toBe(4096);
+      }
 
       if (name === 'gemini') {
         // Gemini auth is query-param based, so header auth is intentionally absent.

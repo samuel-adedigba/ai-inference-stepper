@@ -15,6 +15,7 @@ export { nvidiaLlamaProviderSpec, nvidiaDracarysProviderSpec } from './catalog/n
 export { openaiProviderSpec } from './catalog/openai.js';
 export { openrouterProviderSpec } from './catalog/openrouter.js';
 export { perplexityProviderSpec } from './catalog/perplexity.js';
+export { qorebitDeepseekProviderSpec, qorebitQwenProviderSpec } from './catalog/qorebit.js';
 export { togetherProviderSpec } from './catalog/together.js';
 
 /**

@@ -29,6 +29,27 @@ export OPENAI_API_KEY=replace-with-your-provider-key
 npx stepper
 ```
 
+Qorebit can be enabled as two server-side model lanes. Qwen3 Coder Flash is the
+fast coding-focused primary for structured CommitDiary reports, while DeepSeek V3
+is a stronger fallback for harder generations:
+
+```bash
+export QOREBIT_API_KEY=qb_live_replace-with-your-provider-key
+export QOREBIT_QWEN_ENABLED=true
+export QOREBIT_DEEPSEEK_ENABLED=true
+npx stepper
+```
+
+Both lanes use the OpenAI-compatible Qorebit Chat Completions endpoint. Keep
+`QOREBIT_API_KEY` in Stepper's server environment; consumers should select
+`preferredProviders: ["qorebit-qwen", "qorebit-deepseek"]` only by lane name.
+Do not send provider credentials or arbitrary model IDs in HTTP requests.
+
+Qorebit currently offers a free 5-credit trial and then meters model usage by
+tokens. The free trial is not an unlimited/free inference tier; open-weight
+models still consume credits. Configure Qorebit dashboard credit caps before
+enabling it in a shared or production environment.
+
 In production, provide secrets through the hosting platform's environment configuration. Do not commit them or place
 them in request payloads.
 

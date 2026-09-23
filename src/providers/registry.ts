@@ -16,6 +16,8 @@ import {
   openaiProviderSpec,
   openrouterProviderSpec,
   perplexityProviderSpec,
+  qorebitDeepseekProviderSpec,
+  qorebitQwenProviderSpec,
   togetherProviderSpec,
 } from './specs.js';
 
@@ -118,6 +120,12 @@ export function validateProviderConfig(config: ProviderConfig): ProviderConfigVa
       const apiKey = resolveApiKey(config, togetherProviderSpec.apiKeyEnvVar);
       return apiKey ? { valid: true } : { valid: false, reason: 'together requires apiKey (or TOGETHER_API_KEY env)' };
     }
+    case 'qorebit-qwen':
+    case 'qorebit-deepseek': {
+      const spec = providerName === 'qorebit-qwen' ? qorebitQwenProviderSpec : qorebitDeepseekProviderSpec;
+      const apiKey = resolveApiKey(config, spec.apiKeyEnvVar);
+      return apiKey ? { valid: true } : { valid: false, reason: providerName + ' requires apiKey (or QOREBIT_API_KEY env)' };
+    }
     default:
       return { valid: false, reason: `unsupported provider '${config.name}'` };
   }
@@ -171,6 +179,10 @@ export function getProviderAdapter(config: ProviderConfig): ProviderAdapter | nu
       return createUnifiedProviderAdapter(config, perplexityProviderSpec);
     case 'together':
       return createUnifiedProviderAdapter(config, togetherProviderSpec);
+    case 'qorebit-qwen':
+      return createUnifiedProviderAdapter(config, qorebitQwenProviderSpec);
+    case 'qorebit-deepseek':
+      return createUnifiedProviderAdapter(config, qorebitDeepseekProviderSpec);
     default:
       return null;
   }

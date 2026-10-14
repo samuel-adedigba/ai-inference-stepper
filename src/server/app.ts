@@ -4,7 +4,7 @@ import express, { Request, Response, NextFunction, Application } from 'express';
 import { createHash } from 'node:crypto';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { type AugmentedRequest } from 'express-rate-limit';
 import { enqueueReport, enqueueRequest, generateReport, generateRequest, getJob, healthcheck, deleteReport, PromptInput, StepperRequest } from '../index.js';
 import { enqueueBatchJob } from '../queue/producer.js';
 import { getReportCache } from '../cache/redisCache.js';
@@ -106,11 +106,18 @@ if (config.security.rateLimit.enabled) {
       return false;
     },
     handler: (req, res) => {
+      const resetTime = (req as AugmentedRequest).rateLimit?.resetTime?.getTime();
+      const remainingMs = resetTime !== undefined && Number.isFinite(resetTime)
+        ? resetTime - Date.now()
+        : config.security.rateLimit.windowMs;
+      const retryAfter = Math.max(1, Math.ceil(remainingMs / 1000));
       logger.warn({ ip: req.ip, path: req.path }, 'Rate limit exceeded (IP)');
+      res.setHeader('Retry-After', String(retryAfter));
       res.status(429).json({
         error: 'Too many requests',
+        code: 'IP_RATE_LIMITED',
         message: 'You have exceeded the rate limit. Please try again later.',
-        retryAfter: Math.ceil(config.security.rateLimit.windowMs / 1000),
+        retryAfter,
       });
     },
     // Note: Using default keyGenerator which handles IPv6 properly
@@ -160,11 +167,14 @@ const userRateLimiter = async (req: Request, res: Response, next: NextFunction):
 
     if (count > maxPerUser) {
       const ttl = await redis.pttl(redisKey);
-      logger.warn({ rateLimitKey, count, path: req.path }, 'Rate limit exceeded (User/Tenant)');
+      const retryAfter = Math.ceil((ttl > 0 ? ttl : windowMs) / 1000);
+      logger.warn({ count, path: req.path, retryAfter }, 'Rate limit exceeded (Credential)');
+      res.setHeader('Retry-After', String(retryAfter));
       res.status(429).json({
         error: 'Too many requests',
+        code: 'CREDENTIAL_RATE_LIMITED',
         message: 'You have exceeded the request rate limit. Please try again later.',
-        retryAfter: Math.ceil((ttl > 0 ? ttl : windowMs) / 1000),
+        retryAfter,
       });
       return;
     }

@@ -16,7 +16,7 @@ import { handleCommitReportWebhook } from '../presets/commit-report/webhookEndpo
 import { toCommitReportInput, validateCommitReportInput } from '../presets/commit-report/request.js';
 import { parseHttpOutputSchemaInput, toRuntimeOutputSchemaFromHttp } from '../validation/httpOutputSchema.js';
 import { validateBatchEnvelope } from '../validation/batch.js';
-import { getRateLimitRedisClient, RedisRateLimitStore } from './redisRateLimitStore.js';
+import { getReadyRateLimitRedisClient, RedisRateLimitStore } from './redisRateLimitStore.js';
 
 const app: Application = express();
 const MAX_HTTP_REQUEST_BYTES = 1_000_000;
@@ -159,7 +159,7 @@ const userRateLimiter = async (req: Request, res: Response, next: NextFunction):
     const digest = createHash('sha256').update(rateLimitKey).digest('hex');
     const bucket = Math.floor(now / windowMs);
     const redisKey = `${config.redis.keyPrefix}rate-limit:user:${digest}:${bucket}`;
-    const redis = getRateLimitRedisClient();
+    const redis = await getReadyRateLimitRedisClient();
     const count = await redis.incrby(redisKey, requestWeight);
     if (count === requestWeight) {
       await redis.pexpire(redisKey, windowMs);
@@ -848,10 +848,29 @@ app.get('/', (_req: Request, res: Response) => {
 // ERROR HANDLER
 // =============================================================================
 
-app.use((_err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  logger.error({ errorCode: 'UNHANDLED_SERVER_ERROR' }, 'Unhandled error');
-  res.status(500).json({
-    error: 'Internal server error',
+app.use((err: Error & { code?: unknown; status?: unknown; statusCode?: unknown; type?: unknown }, req: Request, res: Response, _next: NextFunction) => {
+  const suppliedStatus = Number(err.statusCode ?? err.status);
+  const invalidJson = err.type === 'entity.parse.failed';
+  const status = invalidJson
+    ? 400
+    : Number.isInteger(suppliedStatus) && suppliedStatus >= 400 && suppliedStatus <= 599
+      ? suppliedStatus
+      : 500;
+  const suppliedCode = typeof err.code === 'string' && /^[A-Z0-9_:-]{1,80}$/.test(err.code)
+    ? err.code
+    : null;
+  const errorCode = invalidJson ? 'INVALID_JSON_BODY' : suppliedCode || 'UNHANDLED_SERVER_ERROR';
+  const fields = { errorCode, method: req.method, path: req.path, status };
+
+  if (status >= 500) {
+    logger.error(fields, 'Unhandled error');
+  } else {
+    logger.warn(fields, 'Request rejected');
+  }
+
+  res.status(status).json({
+    error: invalidJson ? 'Invalid JSON request body' : 'Internal server error',
+    code: errorCode,
   });
 });
 

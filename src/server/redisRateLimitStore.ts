@@ -4,6 +4,17 @@ import { config } from '../config.js';
 import { logger } from '../logging.js';
 
 let rateLimitRedis: Redis | null = null;
+const RATE_LIMIT_REDIS_READY_TIMEOUT_MS = 2_000;
+
+class RateLimitRedisUnavailableError extends Error {
+    public readonly code = 'RATE_LIMIT_REDIS_NOT_READY';
+    public readonly statusCode = 503;
+
+    constructor() {
+        super('Rate-limit Redis is not ready');
+        this.name = 'RateLimitRedisUnavailableError';
+    }
+}
 
 export function getRateLimitRedisClient(): Redis {
     if (!rateLimitRedis) {
@@ -23,6 +34,47 @@ export function getRateLimitRedisClient(): Redis {
         });
     }
     return rateLimitRedis;
+}
+
+/** Wait for the lazily-created Redis socket before issuing the first command. */
+export async function getReadyRateLimitRedisClient(): Promise<Redis> {
+    const redis = getRateLimitRedisClient();
+    if (redis.status === 'ready') return redis;
+    if (redis.status === 'end') throw new RateLimitRedisUnavailableError();
+
+    await new Promise<void>((resolve, reject) => {
+        const cleanup = () => {
+            clearTimeout(timeout);
+            redis.off('ready', onReady);
+            redis.off('error', onError);
+            redis.off('end', onEnd);
+        };
+        const onReady = () => {
+            cleanup();
+            resolve();
+        };
+        const onError = () => {
+            cleanup();
+            reject(new RateLimitRedisUnavailableError());
+        };
+        const onEnd = () => {
+            cleanup();
+            reject(new RateLimitRedisUnavailableError());
+        };
+        const timeout = setTimeout(() => {
+            cleanup();
+            reject(new RateLimitRedisUnavailableError());
+        }, RATE_LIMIT_REDIS_READY_TIMEOUT_MS);
+
+        redis.once('ready', onReady);
+        redis.once('error', onError);
+        redis.once('end', onEnd);
+
+        // The socket may have become ready between the initial check and the listeners.
+        if (redis.status === 'ready') onReady();
+    });
+
+    return redis;
 }
 
 export async function closeRateLimitRedis(): Promise<void> {
@@ -47,7 +99,7 @@ export class RedisRateLimitStore implements Store {
 
     public async increment(key: string): Promise<{ totalHits: number; resetTime: Date }> {
         const redisKey = `${config.redis.keyPrefix}rate-limit:ip:${key}`;
-        const redis = getRateLimitRedisClient();
+        const redis = await getReadyRateLimitRedisClient();
         const totalHits = await redis.incr(redisKey);
         if (totalHits === 1) {
             await redis.pexpire(redisKey, this.windowMs);
@@ -60,17 +112,17 @@ export class RedisRateLimitStore implements Store {
     }
 
     public async decrement(key: string): Promise<void> {
-        const redis = getRateLimitRedisClient();
+        const redis = await getReadyRateLimitRedisClient();
         await redis.decr(`${config.redis.keyPrefix}rate-limit:ip:${key}`);
     }
 
     public async resetKey(key: string): Promise<void> {
-        const redis = getRateLimitRedisClient();
+        const redis = await getReadyRateLimitRedisClient();
         await redis.del(`${config.redis.keyPrefix}rate-limit:ip:${key}`);
     }
 
     private async getTtl(key: string): Promise<number> {
-        const ttl = await getRateLimitRedisClient().pttl(key);
+        const ttl = await (await getReadyRateLimitRedisClient()).pttl(key);
         return ttl > 0 ? ttl : this.windowMs;
     }
 }

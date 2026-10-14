@@ -29,5 +29,9 @@ describe('callback URL policy', () => {
       NODE_ENV: 'development',
       ALLOW_INSECURE_DEV: 'true',
     })).toBe(true);
+    expect(isAllowedCallbackUrl('http://localhost:4012/v1/webhooks/report-completed', {
+      NODE_ENV: 'development',
+      ALLOW_INSECURE_DEV: 'true',
+    })).toBe(true);
   });
 });

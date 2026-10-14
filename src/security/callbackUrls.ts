@@ -47,9 +47,10 @@ export function isAllowedCallbackUrl(
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-    if (url.username || url.password || isPrivateHost(url.hostname)) return false;
+    if (url.username || url.password) return false;
 
     if (allowsInsecureLocalCallbacks(environment)) return true;
+    if (isPrivateHost(url.hostname)) return false;
     return configuredOrigins(environment).has(url.origin);
   } catch {
     return false;

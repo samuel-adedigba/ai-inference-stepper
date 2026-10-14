@@ -257,6 +257,34 @@ flowchart LR
   E --> F[Webhooks and Notifications]
 ```
 
+### Deployment and update flow
+
+CommitDiary production and staging use Stepper over HTTP. The API reads
+`STEPPER_URL` and authenticates with `STEPPER_API_KEY`; it does not download or
+update Stepper at runtime.
+
+The standalone [`ai-inference-stepper`](https://github.com/samuel-adedigba/ai-inference-stepper)
+repository is the deployment source for the Render Stepper service. A Stepper
+change reaches CommitDiary only after this sequence:
+
+1. Implement and verify the change in the standalone Stepper repository.
+2. Keep `packages/stepper` synchronized with that release so this monorepo's
+   integration tests and documentation match the deployed service.
+3. Push the Stepper deployment branch and wait for Render's health check to pass.
+4. Deploy CommitDiary only when the HTTP contract or required environment
+   variables changed. Compatible internal Stepper fixes need no API redeploy.
+5. Verify enqueue, job status, and callback delivery in staging before promoting
+   the same Stepper revision to production.
+
+The API dependency on the npm package is retained for local package mode, but
+deployed `NODE_ENV=production` instances always use the HTTP service. Updating
+that npm dependency alone therefore does not update the deployed Stepper.
+
+For the free Render staging service, the standalone Stepper workflow
+`.github/workflows/keep-alive.yml` calls `/health` every 13 minutes. Configure
+the `STAGING_STEPPER_URL` secret in that repository's GitHub `staging`
+environment. Production services on Coolify do not use this workflow.
+
 ## Component Docs
 
 - Cache: [./src/cache/README.md](./src/cache/README.md)

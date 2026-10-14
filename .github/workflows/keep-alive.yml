@@ -1,4 +1,4 @@
-name: Render Keep-Alive
+name: Staging Render Keep-Alive
 
 on:
   schedule:
@@ -9,40 +9,20 @@ permissions:
   contents: read
 
 concurrency:
-  group: render-keep-alive
+  group: staging-render-keep-alive
   cancel-in-progress: true
 
 jobs:
   ping:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    env:
-      API_URL: https://commitdiary-backend.onrender.com
-      STEPPER_URL: ${{ secrets.RENDER_APP_URL }}
+    timeout-minutes: 3
+    environment: staging
     steps:
-      - name: Ping API and Stepper health endpoints
+      - name: Ping Stepper liveness endpoint
+        env:
+          STEPPER_URL: ${{ secrets.STAGING_STEPPER_URL }}
         shell: bash
         run: |
           set -euo pipefail
-
-          if [[ -z "${STEPPER_URL}" ]]; then
-            echo "RENDER_APP_URL is not configured."
-            exit 1
-          fi
-
-          ping_service() {
-            local name="$1"
-            local base_url="${2%/}"
-            echo "Pinging ${name}..."
-            curl \
-              --fail \
-              --show-error \
-              --silent \
-              --max-time 60 \
-              --retry 2 \
-              --retry-delay 5 \
-              "${base_url}/health" > /dev/null
-          }
-
-          ping_service "CommitDiary API" "${API_URL}"
-          ping_service "CommitDiary Stepper" "${STEPPER_URL}"
+          test -n "${STEPPER_URL}" || { echo "STAGING_STEPPER_URL is not configured."; exit 1; }
+          curl --fail --show-error --silent --max-time 60 --retry 2 --retry-delay 5 "${STEPPER_URL%/}/health" > /dev/null

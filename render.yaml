@@ -32,4 +32,8 @@ services:
         value: "true"
       - key: RATE_LIMIT_ENABLED
         value: "true"
+      # The API credential is one trusted tenant bucket. Allow bounded backfill
+      # bursts while retaining both credential and IP abuse protection.
+      - key: RATE_LIMIT_MAX_PER_USER
+        value: "100"
     healthCheckPath: /health
